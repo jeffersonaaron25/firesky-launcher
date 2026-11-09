@@ -1,0 +1,43 @@
+# Copy this file to local.properties and fill in what you want. local.properties stays on your
+# computer: git ignores it, so your key and your choices never end up in the repository.
+# Everything is optional except tv. Settings are read when the app is built, so run ./install.sh
+# again after changing any of them.
+
+# Where the Android SDK is. Android Studio writes this line for you; otherwise point it at your SDK.
+# sdk.dir=/Users/you/Library/Android/sdk
+
+# Your TV's address on your home network, such as 192.168.1.50: Settings > My Fire TV > About > Network.
+tv=
+
+# A free TMDB API key (https://www.themoviedb.org/settings/api) turns on the New and Trending
+# cards: films and shows on the apps you have. Leave it empty to go without them.
+tmdb.key=
+
+# The apps in the dock, in order, by package name. Apps that aren't installed are skipped, and
+# everything else is in All apps. Leave it empty for a sensible default. To list what's on your TV:
+#   adb shell pm list packages -3
+# Common ones: Netflix com.netflix.ninja, Prime Video com.amazon.firebat, YouTube
+# com.amazon.firetv.youtube, Disney+ com.disney.disneyplus, Max com.hbo.hbonow, Hulu com.hulu.plus,
+# Apple TV com.apple.atve.amazon.appletv, Paramount+ com.cbs.ott, Plex com.plexapp.android,
+# Kodi org.xbmc.kodi, AirPlay com.apple.airplay.amazon.airplay
+dock=
+
+# Apps to keep out of sight altogether, by package name, separated by commas.
+hide=
+
+# A PlayStation tile in the dock that's always there, for the HDMI port it's plugged into.
+# Leave it empty and the tile appears only when the TV sees a PlayStation on one of its inputs.
+ps5.port=
+
+# celsius or fahrenheit, and mph or kmh. Empty follows your TV's country.
+temperature=
+wind=
+
+# 12 or 24. Empty follows your TV's own setting.
+clock=
+
+# Which country's streaming catalogue New and Trending come from (US, GB, DE...), and the language
+# for titles (en-US, en-GB, de-DE...). Empty follows your TV.
+region=
+language=
+
