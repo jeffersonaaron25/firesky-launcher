@@ -1,7 +1,8 @@
-# Copy this file to local.properties and fill in what you want. local.properties stays on your
-# computer: git ignores it, so your key and your choices never end up in the repository.
-# Everything is optional except tv. Settings are read when the app is built, so run ./install.sh
-# again after changing any of them.
+# For building FireSky yourself. Copy this file to local.properties: git ignores it, so your key
+# and your choices never end up in the repository. Everything is optional except tv.
+#
+# Most of these are only defaults for your own builds: FireSky's settings on the TV (hold OK on the
+# Settings tile) come first. They're read when the app is built, so run ./install.sh after changing them.
 
 # Where the Android SDK is. Android Studio writes this line for you; otherwise point it at your SDK.
 # sdk.dir=/Users/you/Library/Android/sdk
@@ -10,7 +11,7 @@
 tv=
 
 # A free TMDB API key (https://www.themoviedb.org/settings/api) turns on the New and Trending
-# cards: films and shows on the apps you have. Leave it empty to go without them.
+# cards: films and shows on the apps you have. It can also be added on the TV, from your phone.
 tmdb.key=
 
 # The apps in the dock, in order, by package name. Apps that aren't installed are skipped, and
@@ -41,3 +42,6 @@ clock=
 region=
 language=
 
+# Signing releases with your own key: a file holding storeFile, storePassword, keyAlias and
+# keyPassword. Without it, builds are signed with Android's debug key.
+# signing=~/.firesky/signing.properties

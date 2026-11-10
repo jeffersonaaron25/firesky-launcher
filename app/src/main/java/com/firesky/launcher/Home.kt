@@ -141,7 +141,12 @@ import kotlin.math.sin
 interface Actions {
     fun open(c: Card)
     fun amazonHome()
-    fun quickSettings()
+    /** A setting changed on the TV; [key] says which. */
+    fun changed(key: String) {}
+    /** Opens or closes the phone page for the TMDB key. */
+    fun phone(open: Boolean) {}
+    /** Installs the downloaded release, or looks for one. */
+    fun update() {}
 }
 
 /** Everything is laid out in the mock's 1280x720 design units and scaled to the screen. */
@@ -201,15 +206,25 @@ private fun handleKey(s: HomeState, act: Actions, e: KeyEvent, fm: FocusManager)
     }
     // The app you picked is still opening, so another OK would open it twice.
     if (isOk(e) && SystemClock.uptimeMillis() < s.openingUntil) return true
+    // The QR pages close with Back (or OK); under them, FireSky's settings have keys of their own.
+    if (s.phoneUrl != null || s.guide) {
+        if (up && (e.key == Key.Back || e.key == Key.Menu || isOk(e))) { if (s.phoneUrl != null) act.phone(false); s.guide = false; Sfx.back() }
+        return true
+    }
+    if (s.settings) return settingsKey(s, act, e)
     s.menu?.let { return menuKey(s, act, it, e) }
     s.moving?.let { return moveKey(s, it, e) }
     if (s.panel) {
         if (up && (e.key == Key.Back || e.key == Key.Menu || isOk(e))) { s.panel = false; Sfx.back() }
         return true
     }
-    // Menu does here what it does across Fire TV. The weather is the chip in the corner.
+    // Menu is the options button, as on Amazon's home: the same choices as holding OK on a tile.
+    // (Fire TV's own quick settings only open for Amazon's apps.) The weather is the chip in the corner.
     if (e.key == Key.Menu) {
-        if (up) act.quickSettings()
+        if (up) {
+            val c = if (s.allApps) s.current?.removePrefix("all-")?.let(s::app)?.let(s::allCard) else s.rows.flatten().firstOrNull { it.key == s.current }
+            c?.let { s.openMenu(it); Sfx.select() }
+        }
         return true
     }
     if (s.allApps && e.key == Key.Back) {
@@ -251,7 +266,7 @@ private fun menuKey(s: HomeState, act: Actions, m: TileMenu, e: KeyEvent): Boole
             s.menuIndex = (s.menuIndex + d + m.items.size) % m.items.size
             Sfx.move(s.menuIndex + 3)
         }
-        e.key == Key.Back -> if (up) { s.menu = null; Sfx.back() }
+        e.key == Key.Back || e.key == Key.Menu -> if (up) { s.menu = null; Sfx.back() }
         isOk(e) -> if (up) {
             // The first release belongs to the long press that opened this menu.
             if (s.menuArmed) pick(s, act, m) else s.menuArmed = true
@@ -274,6 +289,10 @@ private fun pick(s: HomeState, act: Actions, m: TileMenu) {
         }
         MenuAct.RESET -> s.resetDock()
         MenuAct.AMAZON -> act.amazonHome()
+        MenuAct.FIRESKY -> { s.settingsIndex = 0; s.settings = true }
+        MenuAct.ADD_DOCK -> c.pkg?.let(s::addToDock)
+        MenuAct.UNDOCK -> { s.hide(c, null); s.toast = "${c.title} is out of the dock" }
+        MenuAct.HIDE_APP -> c.pkg?.let(s::hideApp)
     }
 }
 
@@ -416,7 +435,7 @@ private fun Screen(s: HomeState, act: Actions) {
     val tile = remember(s, act) {
         TileSet(wob.asState(), shine.asState(), { select(it.key); s.focusAt = it.key; landed.intValue++ }, act::open, s::openMenu, s.rects)
     }
-    val allTile = remember(s, act) { TileSet(wob.asState(), shine.asState(), { landed.intValue++ }, act::open, {}, s.rects) }
+    val allTile = remember(s, act) { TileSet(wob.asState(), shine.asState(), { s.current = it.key; landed.intValue++ }, act::open, s::openMenu, s.rects) }
 
     Box(Modifier.fillMaxSize()) {
         if (s.liveOk) {
@@ -472,10 +491,13 @@ private fun Screen(s: HomeState, act: Actions) {
             }
         }
 
-        Toast(s, Modifier.align(Alignment.BottomCenter).padding(bottom = z.d(130)))
         if (s.allApps) AllApps(s, act, allTile)
         Menu(s)
         Panel(s)
+        SettingsScreen(s, act)
+        // Last, so a message sent from All apps or the settings is seen above them, and down at the
+        // edge there, clear of their rows.
+        Toast(s, Modifier.align(Alignment.BottomCenter).padding(bottom = z.d(if (s.settings || s.allApps) 18 else 130)))
         if (rising) {
             Box(Modifier.fillMaxSize().graphicsLayer { alpha = (1 - riseNow() * WAKE_MS / 1100f).coerceIn(0f, 1f) }.background(Color.Black))
         }
@@ -818,6 +840,7 @@ private fun Tile(
 private fun bgFor(c: Card, app: AppEntry?): Brush = when (c.kind) {
     Kind.PS5 -> Brush.linearGradient(listOf(Color(0xFF0D3A8F), Color(0xFF00266B)))
     Kind.SETTINGS, Kind.ALL -> SolidColor(Color(0xFF2A2F3A))
+    Kind.SETUP, Kind.UPDATE -> Brush.linearGradient(listOf(Color(0xFF2B5C93), Color(0xFF16324F)))
     else -> SolidColor(if (app?.banner != null) Color.Black else lerp(app?.hue ?: Color.DarkGray, Color.Black, .45f))
 }
 
@@ -909,7 +932,8 @@ private fun Menu(s: HomeState) {
 @Composable
 private fun AllApps(s: HomeState, act: Actions, t: TileSet) {
     val z = LocalDz.current
-    val first = remember { FocusRequester() }
+    val reqs = remember { mutableMapOf<String, FocusRequester>() }
+    val apps = s.shownApps
     Box(Modifier.fillMaxSize().background(Color(0xF0080A10))) {
         Column(Modifier.padding(start = z.d(72), end = z.d(72), top = z.d(48))) {
             T("All apps", 40f, 600)
@@ -920,9 +944,9 @@ private fun AllApps(s: HomeState, act: Actions, t: TileSet) {
                 verticalArrangement = Arrangement.spacedBy(z.d(22)),
                 contentPadding = PaddingValues(start = z.d(8), end = z.d(8), top = z.d(14), bottom = z.d(80)),
             ) {
-                itemsIndexed(s.apps, key = { _, a -> a.pkg }) { i, a ->
+                itemsIndexed(apps, key = { _, a -> a.pkg }) { i, a ->
                     Column {
-                        Tile(s.appCard(a), a, 164f, 92f, false, if (i == 0) first else null, t, step = 2 + i % 6)
+                        Tile(s.allCard(a), a, 164f, 92f, false, reqs.getOrPut(a.pkg) { FocusRequester() }, t, step = 2 + i % 6)
                         Spacer(Modifier.height(z.d(10)))
                         T(a.label, 16f, 400, .78f)
                     }
@@ -930,9 +954,18 @@ private fun AllApps(s: HomeState, act: Actions, t: TileSet) {
             }
         }
     }
-    LaunchedEffect(Unit) {
+    // The first app when it opens; after one is hidden, the app that took its place. An app that
+    // arrives while it's open leaves the selection alone.
+    val was = remember { mutableListOf<String>() }
+    val pkgs = apps.map { it.pkg }
+    LaunchedEffect(pkgs) {
+        val opening = was.isEmpty()
+        val gone = was.indexOfFirst { it !in pkgs }
+        was.clear(); was.addAll(pkgs)
+        if (!opening && gone < 0) return@LaunchedEffect
+        val at = if (gone < 0) 0 else gone.coerceAtMost(pkgs.lastIndex)
         withFrameNanos { }
-        runCatching { first.requestFocus() }
+        runCatching { reqs[pkgs.getOrNull(at)]?.requestFocus() }
     }
 }
 

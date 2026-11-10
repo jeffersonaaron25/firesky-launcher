@@ -92,6 +92,7 @@ class HomeKey : AccessibilityService() {
 
     override fun onServiceConnected() {
         me = this
+        Prefs.init(this)
         diary = getExternalFilesDir(null)?.let { File(it, "home.log") }
         task = findTask()
         // Both are slow the first time, and a Home press has no time to spare for that.
@@ -121,6 +122,13 @@ class HomeKey : AccessibilityService() {
             if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) go("home key")
             return true
         }
+        // Fire TV's Settings is a page of Amazon's home screen, so Back there would open the rest of
+        // it. Having come from here, Back comes back here. Its own screens (Network and so on) are
+        // separate windows, and Back in them returns to Settings as usual.
+        if (e.keyCode == KeyEvent.KEYCODE_BACK && inSettings && amazonOnTop && !front) {
+            if (e.action == KeyEvent.ACTION_UP) { visiting = false; go("back from settings") }
+            return true
+        }
         // While the screen is covered, keys must not reach Amazon's home underneath.
         if (mask == null) return false
         // Android takes the event back once this returns, so only what it was is kept.
@@ -130,7 +138,11 @@ class HomeKey : AccessibilityService() {
 
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
         if (e?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-        if (e.packageName?.toString() != AMAZON || e.className?.toString() != AMAZON_HOME) return
+        val pkg = e.packageName?.toString()
+        // What's in front: Amazon's home, or another app's window. Its own pop-ups change neither.
+        if (pkg != AMAZON) amazonOnTop = false
+        if (pkg != AMAZON || e.className?.toString() != AMAZON_HOME) return
+        amazonOnTop = true
         // Amazon's home often reports itself late, after the home screen is already back. Acting on
         // that would cover the real home screen with nothing to lift it.
         if (!front && !visiting) go("amazon home")
@@ -237,6 +249,13 @@ class HomeKey : AccessibilityService() {
          * stay until you press Home or come back here some other way.
          */
         @Volatile var visiting = false
+            set(v) { field = v; if (!v) inSettings = false }
+
+        /** The visit is to Fire TV's Settings, where Back is ours. */
+        @Volatile private var inSettings = false
+
+        /** Amazon's home screen, which Settings is a page of, is the window in front. */
+        @Volatile private var amazonOnTop = false
 
         /** Whether the home screen is what's on the TV right now. */
         @Volatile var front = false
@@ -298,6 +317,7 @@ class HomeKey : AccessibilityService() {
         /** Fire TV's full settings, a page of Amazon's home screen, reached through its own shortcut. */
         fun openSettings(c: Context) =
             visit(c, Intent().setClassName(AMAZON, "$AMAZON.ui.SettingsActivity"), Intent(android.provider.Settings.ACTION_SETTINGS))
+                .also { inSettings = it }
 
         private fun visit(c: Context, vararg tries: Intent): Boolean {
             visiting = true

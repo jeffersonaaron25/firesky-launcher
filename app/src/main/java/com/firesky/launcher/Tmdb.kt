@@ -32,7 +32,7 @@ object Tmdb {
     /** News, reality, soap and talk: not what a home screen should lead with. */
     private const val SKIP_GENRES = "10763,10764,10766,10767"
 
-    val on get() = BuildConfig.TMDB_KEY.isNotBlank()
+    val on get() = Prefs.tmdbKey.isNotBlank()
 
     class Item(
         val id: Int, val movie: Boolean, val title: String, val isNew: Boolean,
@@ -88,7 +88,7 @@ object Tmdb {
     }
 
     internal fun api(path: String, vararg q: Pair<String, String>): JSONObject {
-        val query = (q.toList() + ("api_key" to BuildConfig.TMDB_KEY))
+        val query = (q.toList() + ("api_key" to Prefs.tmdbKey))
             .joinToString("&") { (k, v) -> "$k=${URLEncoder.encode(v, "UTF-8")}" }
         return JSONObject(get("$API$path?$query"))
     }
@@ -158,6 +158,9 @@ object Tmdb {
         ?: runCatching { fromJson(JSONArray(cacheFile(ctx).readText())) }.getOrDefault(emptyList()).also { if (it.isNotEmpty()) held = it }
 
     fun stale(ctx: Context) = System.currentTimeMillis() - cacheFile(ctx).lastModified() > MAX_AGE_MS
+
+    /** Drops what's kept, after the key or the country changes. */
+    fun forget(ctx: Context) { held = null; cacheFile(ctx).delete() }
 
     /** Fetches today's titles. One service failing doesn't lose the others. */
     fun refresh(ctx: Context): List<Item>? {

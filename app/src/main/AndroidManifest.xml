@@ -6,6 +6,8 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Installing a new release of FireSky itself, after you say yes on screen. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Granted once over ADB: which apps you open and when, for "Usually now" and "Opened 2 h ago". -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
     <!-- Granted once over ADB: reads Kodi's watch history for the Continue card. -->
@@ -63,5 +65,14 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <!-- After an update you accepted on screen, FireSky comes back instead of Amazon's home. -->
+        <receiver
+            android:name=".Updater$Reopen"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

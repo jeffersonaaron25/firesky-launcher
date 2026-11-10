@@ -1,15 +1,56 @@
 package com.firesky.launcher
 
+import android.content.Context
+import android.content.SharedPreferences
 import java.util.Locale
 
 /**
- * Your choices, read from local.properties when the app is built (local.properties.example lists
- * them all). Anything you leave out follows the TV: its country decides the units and which
- * streaming catalogue to show, and its own setting decides a 12 or 24-hour clock.
+ * Your choices. What you pick in FireSky's settings on the TV comes first; a build of your own can
+ * set defaults in local.properties (local.properties.example lists them). Anything left on Auto
+ * follows the TV: its country decides the units and which streaming catalogue to show, and its own
+ * setting decides a 12 or 24-hour clock.
  */
 object Prefs {
     private fun list(s: String) = s.split(',').map { it.trim() }.filter { it.isNotEmpty() }
-    private val country get() = Locale.getDefault().country.uppercase(Locale.ROOT)
+
+    /** The TV's own country, as set on the TV. */
+    val country get() = Locale.getDefault().country.uppercase(Locale.ROOT)
+
+    @Volatile private var store: SharedPreferences? = null
+
+    fun init(c: Context) {
+        store = c.applicationContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    }
+
+    /** Back to the build's defaults alone, for tests. */
+    fun forget() { store = null }
+
+    /** What was picked on the TV ("" for Auto), or else the build's default. */
+    private fun pick(key: String, built: String) = store?.getString(key, null) ?: built
+
+    /** A choice made on the TV. "" means Auto. */
+    fun set(key: String, value: String) { store?.edit()?.putString(key, value)?.apply() }
+
+    /** The raw choice for [key], for the settings screen: "" is Auto. */
+    fun chosen(key: String): String = when (key) {
+        TEMPERATURE -> pick(key, BuildConfig.TEMPERATURE)
+        WIND -> pick(key, BuildConfig.WIND)
+        CLOCK -> pick(key, BuildConfig.CLOCK)
+        REGION -> pick(key, BuildConfig.REGION)
+        PS5 -> pick(key, BuildConfig.PS5_PORT.toString())
+        else -> store?.getString(key, null) ?: ""
+    }.trim().lowercase(Locale.ROOT)
+
+    const val TEMPERATURE = "temperature"
+    const val WIND = "wind"
+    const val CLOCK = "clock"
+    const val REGION = "region"
+    const val PS5 = "ps5.port"
+    const val TMDB = "tmdb.key"
+
+    /** What Auto means here, from the TV's country. */
+    val autoFahrenheit get() = country in setOf("US", "LR", "MM")
+    val autoMph get() = country in setOf("US", "GB", "LR", "MM")
 
     /** Popular apps, in this order, for anyone who hasn't picked their own. Missing ones are skipped. */
     val DEFAULT_DOCK = listOf(
@@ -32,22 +73,22 @@ object Prefs {
     /** Apps kept out of All apps as well as the dock. */
     val hide: Set<String> by lazy { list(BuildConfig.HIDE).toSet() }
 
-    val fahrenheit get() = when (BuildConfig.TEMPERATURE.lowercase(Locale.ROOT)) {
+    val fahrenheit get() = when (chosen(TEMPERATURE)) {
         "fahrenheit", "f" -> true
         "celsius", "c" -> false
-        else -> country in setOf("US", "LR", "MM")
+        else -> autoFahrenheit
     }
 
-    val mph get() = when (BuildConfig.WIND.lowercase(Locale.ROOT)) {
+    val mph get() = when (chosen(WIND)) {
         "mph" -> true
         "kmh", "km/h" -> false
-        else -> country in setOf("US", "GB", "LR", "MM")
+        else -> autoMph
     }
     val windUnit get() = if (mph) "mph" else "km/h"
 
     /** The TV's own 12/24-hour setting, read when the app starts. */
     @Volatile var system24 = false
-    val clock24 get() = when (BuildConfig.CLOCK.trim()) {
+    val clock24 get() = when (chosen(CLOCK)) {
         "24" -> true
         "12" -> false
         else -> system24
@@ -63,11 +104,14 @@ object Prefs {
     fun hour(h: Int) = if (clock24) "%d:00".format(Locale.US, h) else "${if (h % 12 == 0) 12 else h % 12} ${if (h < 12) "AM" else "PM"}"
 
     /** Which country's streaming catalogue "New" and "Trending" come from, as TMDB names it. */
-    val region get() = BuildConfig.REGION.trim().uppercase(Locale.ROOT).ifEmpty { country.ifEmpty { "US" } }
+    val region get() = chosen(REGION).uppercase(Locale.ROOT).ifEmpty { country.ifEmpty { "US" } }
 
     /** The language titles are shown in, such as en-US. */
     val language get() = BuildConfig.LANGUAGE.trim().ifEmpty { Locale.getDefault().toLanguageTag() }
 
     /** The HDMI port for a PlayStation tile that's always in the dock, or 0 to show one only when it's plugged in. */
-    val ps5Port get() = BuildConfig.PS5_PORT
+    val ps5Port get() = chosen(PS5).toIntOrNull() ?: 0
+
+    /** The TMDB key that turns on New and Trending: added from a phone, or a build's own. */
+    val tmdbKey get() = (store?.getString(TMDB, null) ?: BuildConfig.TMDB_KEY).trim()
 }

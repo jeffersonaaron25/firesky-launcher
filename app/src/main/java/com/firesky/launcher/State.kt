@@ -16,7 +16,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
-enum class Kind { APP, RESUME, KODI, USUAL, TITLE, PS5, SETTINGS, ALL, WEATHER }
+enum class Kind { APP, RESUME, KODI, USUAL, TITLE, PS5, SETTINGS, ALL, WEATHER, SETUP, UPDATE }
 
 /**
  * Anything you can select: a dock tile, a Tonight card or the weather. The hero shows its label, title and meta.
@@ -43,7 +43,8 @@ data class Card(
 )
 
 enum class MenuAct(val label: String) {
-    MOVE("Move"), HIDE("Hide"), HIDE_CARD("Hide this"), RESET("Reset the dock"), AMAZON("Amazon home")
+    MOVE("Move"), HIDE("Hide"), HIDE_CARD("Hide this"), RESET("Reset the dock"), AMAZON("Amazon home"), FIRESKY("FireSky settings"),
+    ADD_DOCK("Add to dock"), UNDOCK("Remove from dock"), HIDE_APP("Hide from All apps")
 }
 
 class TileMenu(val card: Card, val items: List<MenuAct>)
@@ -80,6 +81,19 @@ class HomeState {
     @Volatile var openingUntil = 0L
 
     var panel by mutableStateOf(false)
+    /** FireSky's own settings, and the line selected in them. */
+    var settings by mutableStateOf(false)
+    var settingsIndex by mutableIntStateOf(0)
+    /** Bumped when a setting changes, so whatever shows it is drawn again. */
+    var settingsTick by mutableIntStateOf(0)
+    /** The phone page's address while its QR code is up ("" if it couldn't start). */
+    var phoneUrl by mutableStateOf<String?>(null)
+    /** The steps for the one-time setup from a computer. */
+    var guide by mutableStateOf(false)
+    /** Whether Home opens FireSky. Fire TV allows it only after a one-time step from a computer. */
+    var homeReady by mutableStateOf(true)
+    /** A newer release, downloaded and waiting for you to say install. */
+    var update by mutableStateOf<Updater.Ready?>(null)
     var menu by mutableStateOf<TileMenu?>(null)
     var menuIndex by mutableIntStateOf(0)
     /** The press that opened the menu is still down; its release mustn't pick anything. */
@@ -108,13 +122,42 @@ class HomeState {
     var order by mutableStateOf<List<String>>(emptyList())
     var hidden by mutableStateOf<Set<String>>(emptySet())
     var hiddenCards by mutableStateOf<Set<String>>(emptySet())
-    val edited get() = order.isNotEmpty() || hidden.isNotEmpty()
+    /** Apps you added to the dock from All apps, and apps you hid from All apps altogether. */
+    var added by mutableStateOf<Set<String>>(emptySet())
+    var hiddenApps by mutableStateOf<Set<String>>(emptySet())
+    val edited get() = order.isNotEmpty() || hidden.isNotEmpty() || added.isNotEmpty()
 
     fun load(ctx: Context) {
         val l = Layout(ctx)
         layout = l
-        order = l.order; hidden = l.hidden; hiddenCards = l.cards
+        order = l.order; hidden = l.hidden; hiddenCards = l.cards; added = l.added; hiddenApps = l.apps
     }
+
+    /** What All apps lists: everything but what you've hidden. */
+    val shownApps get() = apps.filter { it.pkg !in hiddenApps }
+
+    /** An app's tile in All apps. Its key is its own, apart from the same app's dock tile. */
+    fun allCard(a: AppEntry) = appCard(a).copy(key = "all-${a.pkg}")
+
+    fun addToDock(pkg: String) {
+        hidden = hidden - pkg; added = added + pkg
+        layout?.hidden = hidden; layout?.added = added
+        // In before the PlayStation, Settings and All apps tiles, which stay at the end.
+        val ids = dock().mapNotNull { it.dockId }.filter { it != pkg }.toMutableList()
+        val at = ids.indexOfFirst { it == "ps5" || it == "settings" || it == "all" }.let { if (it < 0) ids.size else it }
+        ids.add(at, pkg)
+        order = ids + order.filter { it !in ids }
+        layout?.order = order
+        toast = "${app(pkg)?.label ?: "It"} is in the dock"
+    }
+
+    fun hideApp(pkg: String) {
+        hiddenApps = hiddenApps + pkg
+        layout?.apps = hiddenApps
+        toast = "${app(pkg)?.label ?: "It"} hidden. FireSky settings can show it again"
+    }
+
+    fun showHiddenApps() { hiddenApps = emptySet(); layout?.apps = hiddenApps }
 
     fun app(pkg: String?) = apps.firstOrNull { it.pkg == pkg }
     private val ps5 get() = hdmi.firstOrNull { it.name.contains("PlayStation", ignoreCase = true) }
@@ -127,7 +170,11 @@ class HomeState {
 
     /** The Tonight row, best guess first: a PS5 that is on, what you paused, what you usually open now, then what's new. */
     fun tonight(): List<Card> {
+        settingsTick
         val out = mutableListOf<Card>()
+        // Until Home opens FireSky, the first thing here says how.
+        if (!homeReady) out += Card("t-setup", Kind.SETUP, null, "Finish setting up", "Finish setup", "Make the Home button open FireSky", SKY)
+        update?.let { out += Card("t-update", Kind.UPDATE, null, "Update", "FireSky ${it.version}", "Ready to install · OK to update", SKY) }
         ps5?.takeIf { it.on }?.let {
             out += Card("t-ps5", Kind.PS5, null, "HDMI ${it.port}", it.name, "On", PS5_HUE, on = true, port = it.port)
         }
@@ -187,8 +234,9 @@ class HomeState {
 
     /** The dock stays in your order, so muscle memory keeps working. It never reorders itself. */
     fun dock(): List<Card> {
+        settingsTick
         val cards = LinkedHashMap<String, Card>()
-        Apps.DOCK.mapNotNull { app(it) }.forEach { cards[it.pkg] = appCard(it) }
+        (Apps.DOCK + added).distinct().filter { it !in hiddenApps }.mapNotNull { app(it) }.forEach { cards[it.pkg] = appCard(it) }
         // A PlayStation gets a tile when one is plugged in, or always, at the port you set.
         val p = ps5
         if (p != null || Prefs.ps5Port > 0) cards["ps5"] = Card(
@@ -196,7 +244,7 @@ class HomeState {
             if (p?.on == true) "On" else "Standby", PS5_HUE, on = p?.on == true, port = p?.port ?: Prefs.ps5Port, dockId = "ps5",
         )
         cards["settings"] = Card("d-settings", Kind.SETTINGS, null, "", "Settings", "Fire TV settings", GREY, dockId = "settings")
-        cards["all"] = Card("d-all", Kind.ALL, null, "", "All apps", if (apps.isEmpty()) "" else "${apps.size} apps", GREY, dockId = "all")
+        cards["all"] = Card("d-all", Kind.ALL, null, "", "All apps", if (apps.isEmpty()) "" else "${shownApps.size} apps", GREY, dockId = "all")
         val ids = order.filter { it in cards } + cards.keys.filter { it !in order }
         return ids.filter { it !in hidden }.map(cards::getValue)
     }
@@ -206,12 +254,13 @@ class HomeState {
 
     fun openMenu(c: Card) {
         val items = when {
-            c.dockId == "settings" -> listOf(MenuAct.MOVE, MenuAct.AMAZON)
+            c.key.startsWith("all-") -> listOf(if (dock().any { it.dockId == c.pkg }) MenuAct.UNDOCK else MenuAct.ADD_DOCK, MenuAct.HIDE_APP)
+            c.dockId == "settings" -> listOf(MenuAct.FIRESKY, MenuAct.MOVE, MenuAct.AMAZON)
             c.dockId == "all" -> listOf(MenuAct.MOVE)
             c.dockId != null -> listOf(MenuAct.MOVE, MenuAct.HIDE)
             c.hideId != null -> listOf(MenuAct.HIDE_CARD)
             else -> return
-        } + if (c.dockId != null && edited) listOf(MenuAct.RESET) else emptyList()
+        } + if (c.dockId != null && edited && !c.key.startsWith("all-")) listOf(MenuAct.RESET) else emptyList()
         menuIndex = 0; menuArmed = false
         menu = TileMenu(c, items)
     }
@@ -236,8 +285,8 @@ class HomeState {
     }
 
     fun resetDock() {
-        order = emptyList(); hidden = emptySet()
-        layout?.order = order; layout?.hidden = hidden
+        order = emptyList(); hidden = emptySet(); added = emptySet()
+        layout?.order = order; layout?.hidden = hidden; layout?.added = added
         toast = "Dock reset"
     }
 
@@ -310,6 +359,12 @@ private class Layout(ctx: Context) {
     var cards: Set<String>
         get() = p.getStringSet("cards", emptySet()).orEmpty().toSet()
         set(v) { p.edit().putStringSet("cards", v).apply() }
+    var added: Set<String>
+        get() = p.getStringSet("added", emptySet()).orEmpty().toSet()
+        set(v) { p.edit().putStringSet("added", v).apply() }
+    var apps: Set<String>
+        get() = p.getStringSet("apps", emptySet()).orEmpty().toSet()
+        set(v) { p.edit().putStringSet("apps", v).apply() }
 }
 
 object Fmt {

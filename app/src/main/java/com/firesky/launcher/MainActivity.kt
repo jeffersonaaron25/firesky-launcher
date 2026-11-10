@@ -36,6 +36,7 @@ class MainActivity : ComponentActivity(), Actions {
     private var watchArtJob: Job? = null
     private var appsJob: Job? = null
     private var kodiJob: Job? = null
+    private var phonePage: Phone? = null
     /** Until then, a position an app saves is shown at once: the app you just left may only now be saying where you stopped. */
     private var resumeUntil = 0L
     /** How the home screen was when you left it: the tile selected, and nothing open over it. */
@@ -58,7 +59,16 @@ class MainActivity : ComponentActivity(), Actions {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Prefs.init(this)
         Prefs.system24 = android.text.format.DateFormat.is24HourFormat(this)
+        // For trying an update before it's published: point the check at another release feed.
+        // adb only, like the sky test: the sender needs DUMP.
+        registerReceiver(object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context, i: Intent) {
+                getSharedPreferences("update", MODE_PRIVATE).edit().putString("feed", i.getStringExtra("url")).apply()
+                update()
+            }
+        }, android.content.IntentFilter("com.firesky.launcher.UPDATE_FEED"), android.Manifest.permission.DUMP, null)
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
@@ -156,6 +166,11 @@ class MainActivity : ComponentActivity(), Actions {
         HomeKey.front = true
         HomeKey.visiting = false
         HomeKey.mark("resumed")
+        s.homeReady = android.provider.Settings.Secure.getString(contentResolver, "enabled_accessibility_services")?.contains("$packageName/") == true
+        lifecycleScope.launch {
+            val r = withContext(Dispatchers.IO) { Updater.check(this@MainActivity) }
+            if (r != null) s.update = r
+        }
         // Brought back by the TV waking up: the rise plays, from the first card.
         val woke = Wake.take()
         if (woke) s.woke()
@@ -462,6 +477,55 @@ class MainActivity : ComponentActivity(), Actions {
             Kind.SETTINGS -> if (!HomeKey.openSettings(this)) s.toast = "Couldn't open settings"
             Kind.ALL -> s.allApps = true
             Kind.WEATHER -> s.panel = true
+            Kind.SETUP -> s.guide = true
+            Kind.UPDATE -> update()
+        }
+    }
+
+    override fun changed(key: String) {
+        when (key) {
+            // Each set of units keeps its own forecast, so this one is fetched if it isn't there.
+            Prefs.TEMPERATURE, Prefs.WIND -> {
+                s.wx = Weather.cached(this)
+                lifecycleScope.launch { withContext(Dispatchers.IO) { Weather.fetch(this@MainActivity) }?.let { s.wx = it } }
+            }
+            Prefs.REGION, Prefs.TMDB -> {
+                titlesJob?.cancel()
+                Tmdb.forget(this)
+                s.titles = emptyList()
+                loadTitles()
+            }
+        }
+    }
+
+    override fun phone(open: Boolean) {
+        phonePage?.stop()
+        phonePage = null
+        if (!open) { s.phoneUrl = null; return }
+        val p = Phone(hasKey = { Tmdb.on }) { key ->
+            Prefs.set(Prefs.TMDB, key ?: "")
+            runOnUiThread {
+                phone(false)
+                s.settingsTick++
+                s.toast = if (key == null) "New and Trending are off" else "New and Trending are on"
+                changed(Prefs.TMDB)
+            }
+        }
+        phonePage = p
+        s.phoneUrl = p.start() ?: ""
+    }
+
+    override fun update() {
+        s.update?.let { r ->
+            if (!Updater.install(this, r)) s.toast = "Couldn't start the update"
+            return
+        }
+        if (!BuildConfig.RELEASE) { s.toast = "A build of your own doesn't update itself"; return }
+        s.toast = "Looking for an update…"
+        lifecycleScope.launch {
+            val r = withContext(Dispatchers.IO) { Updater.check(this@MainActivity, now = true) }
+            s.update = r
+            s.toast = if (r != null) "FireSky ${r.version} is ready" else "FireSky is up to date"
         }
     }
 
@@ -469,11 +533,6 @@ class MainActivity : ComponentActivity(), Actions {
         if (!HomeKey.openAmazonHome(this)) s.toast = "Couldn't open Amazon home"
     }
 
-    /** The Menu button's panel everywhere else on Fire TV: picture, sound, inputs and the rest, over this screen. */
-    override fun quickSettings() {
-        val hud = Intent().setClassName("com.amazon.tv.settings.v2", "com.amazon.tv.settings.v2.hud.HudActivity")
-        if (runCatching { startActivity(hud.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isFailure) s.toast = "Couldn't open quick settings"
-    }
 
     private companion object {
         /** Room around the clock for its glow and the weather chip growing when selected. */

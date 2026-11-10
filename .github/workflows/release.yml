@@ -1,0 +1,53 @@
+name: Release
+
+# Pushing a tag like v1.2.0 tests FireSky, builds it, signs it with the release key kept in this
+# repository's secrets, and publishes that release with FireSky.apk attached. FireSky on people's
+# TVs finds it there and offers the update.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --console=plain
+
+      - name: Build and sign
+        env:
+          FIRESKY_KEYSTORE_BASE64: ${{ secrets.FIRESKY_KEYSTORE_BASE64 }}
+          FIRESKY_KEYSTORE_PASSWORD: ${{ secrets.FIRESKY_KEYSTORE_PASSWORD }}
+          FIRESKY_KEY_ALIAS: ${{ secrets.FIRESKY_KEY_ALIAS }}
+          FIRESKY_KEY_PASSWORD: ${{ secrets.FIRESKY_KEY_PASSWORD }}
+        run: |
+          export FIRESKY_KEYSTORE="$RUNNER_TEMP/firesky.jks"
+          printf '%s' "$FIRESKY_KEYSTORE_BASE64" | base64 -d > "$FIRESKY_KEYSTORE"
+          ./gradlew assembleRelease -Pfiresky.version="${GITHUB_REF_NAME#v}" --console=plain
+          rm -f "$FIRESKY_KEYSTORE"
+          cp app/build/outputs/apk/release/app-release.apk FireSky.apk
+
+      # Without the key, the build would quietly be signed with a debug key, and TVs couldn't update.
+      - name: Check it's signed with FireSky's key
+        run: |
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner
+          "$apksigner" verify --print-certs FireSky.apk | grep -q b9f58a6b3bd26409e06a6e97945263ce705b4c0296d5b29d63827fd529a45f6b
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" FireSky.apk \
+            --title "FireSky ${GITHUB_REF_NAME#v}" \
+            --notes "To install, see [Install](https://github.com/${GITHUB_REPOSITORY}#install). FireSky already on a TV offers this update by itself." \
+            --generate-notes

@@ -35,7 +35,6 @@ class HomeScreenTest {
 
     private val opened = mutableListOf<String>()
     private var amazon = 0
-    private var quick = 0
     private val s = HomeState()
     private val act = object : Actions {
         override fun open(c: Card) {
@@ -45,7 +44,6 @@ class HomeScreenTest {
             }
         }
         override fun amazonHome() { amazon++ }
-        override fun quickSettings() { quick++ }
     }
 
     private fun app(pkg: String, label: String, hue: Long) = AppEntry(pkg, label, Intent(), null, null, Color(hue))
@@ -96,10 +94,16 @@ class HomeScreenTest {
         assertEquals(2, opened.size)
     }
 
-    @Test fun menuButtonOpensFireTvsQuickSettings() {
+    @Test fun menuButtonOpensTheSelectedTilesOptions() {
         press(Key.Menu); settle()
-        assertEquals(1, quick)
+        assertEquals(listOf(MenuAct.HIDE_CARD), s.menu!!.items)
         assertFalse(s.panel)
+        press(Key.Menu); settle()
+        assertNull(s.menu)
+        press(Key.DirectionDown); press(Key.Menu); settle()
+        assertEquals(listOf(MenuAct.MOVE, MenuAct.HIDE), s.menu!!.items)
+        press(Key.Back)
+        assertTrue(opened.isEmpty())
     }
 
     private fun panelWith(vararg rain: Double) {
@@ -295,6 +299,87 @@ class HomeScreenTest {
         repeat(s.dock().size + 2) { press(Key.DirectionRight) }
         press(Key.DirectionCenter); settle()
         assertTrue(s.allApps)
+        assertTrue(opened.isEmpty())
+    }
+
+    @Test fun fireSkySettingsOpenFromTheSettingsTileAndChangeThings() {
+        Prefs.init(RuntimeEnvironment.getApplication())
+        // From Auto, whatever this build's own defaults are.
+        Prefs.set(Prefs.TEMPERATURE, ""); Prefs.set(Prefs.CLOCK, "")
+        try {
+            s.openMenu(s.dock().first { it.dockId == "settings" })
+            assertEquals(MenuAct.FIRESKY, s.menu!!.items.first())
+            press(Key.DirectionCenter); settle()
+            assertTrue(s.settings)
+            // Temperature first: Auto, then °C.
+            press(Key.DirectionRight)
+            assertEquals("celsius", Prefs.chosen(Prefs.TEMPERATURE))
+            assertFalse(Prefs.fahrenheit)
+            press(Key.DirectionLeft)
+            assertEquals("", Prefs.chosen(Prefs.TEMPERATURE))
+            // Two down is the clock.
+            press(Key.DirectionDown); press(Key.DirectionDown); press(Key.DirectionRight)
+            assertTrue(!Prefs.clock24 && Prefs.chosen(Prefs.CLOCK) == "12")
+            press(Key.Back); settle()
+            assertFalse(s.settings)
+            assertTrue(opened.isEmpty())
+        } finally { Prefs.forget() }
+    }
+
+    @Test fun untilHomeWorksTheFirstCardSaysHow() {
+        s.homeReady = false
+        settle()
+        assertEquals(Kind.SETUP, s.tonight().first().kind)
+        s.homeReady = true
+        settle()
+        assertTrue(s.tonight().none { it.kind == Kind.SETUP })
+    }
+
+    @Test fun theStepsOpenAndBackClosesThem() {
+        s.guide = true; settle()
+        press(Key.DirectionRight)
+        press(Key.Back); settle()
+        assertFalse(s.guide)
+        assertTrue(opened.isEmpty())
+    }
+
+    @Test fun allAppsAddsToTheDockAndHidesApps() {
+        s.apps = s.apps + app("com.spotify.tv.android", "Spotify", 0xFF1DB954)
+        settle()
+        val spotify = s.app("com.spotify.tv.android")!!
+        s.allApps = true; settle()
+        s.openMenu(s.allCard(spotify))
+        assertEquals(listOf(MenuAct.ADD_DOCK, MenuAct.HIDE_APP), s.menu!!.items)
+        press(Key.DirectionCenter); settle()
+        val dock = s.dock().mapNotNull { it.dockId }
+        assertTrue("com.spotify.tv.android" in dock)
+        // In before Settings and All apps, which stay at the end.
+        assertEquals(listOf("settings", "all"), dock.takeLast(2))
+        s.openMenu(s.allCard(spotify))
+        assertEquals(MenuAct.UNDOCK, s.menu!!.items.first())
+        press(Key.DirectionCenter); settle()
+        assertTrue(s.dock().none { it.dockId == "com.spotify.tv.android" })
+        s.openMenu(s.allCard(spotify))
+        press(Key.DirectionDown); press(Key.DirectionCenter); settle()
+        assertTrue(s.shownApps.none { it.pkg == "com.spotify.tv.android" })
+        s.showHiddenApps()
+        assertTrue(s.shownApps.any { it.pkg == "com.spotify.tv.android" })
+        assertTrue(opened.isEmpty())
+    }
+
+    @Test fun holdingOkOrMenuInAllAppsOffersTheDock() {
+        s.apps = s.apps + app("com.spotify.tv.android", "Spotify", 0xFF1DB954)
+        settle()
+        press(Key.DirectionDown)
+        repeat(s.dock().size - 1) { press(Key.DirectionRight) }
+        press(Key.DirectionCenter); settle()
+        assertTrue(s.allApps)
+        hold(Key.DirectionCenter)
+        assertTrue(s.menu!!.card.key.startsWith("all-"))
+        press(Key.Back)
+        press(Key.Menu); settle()
+        assertTrue(s.menu!!.card.key.startsWith("all-"))
+        press(Key.Back)
         assertTrue(opened.isEmpty())
     }
 }

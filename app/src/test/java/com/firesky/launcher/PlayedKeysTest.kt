@@ -29,7 +29,6 @@ class PlayedKeysTest {
     private val act = object : Actions {
         override fun open(c: Card) { opened += c.key; s.opening() }
         override fun amazonHome() {}
-        override fun quickSettings() {}
     }
 
     @Before fun setUp() {

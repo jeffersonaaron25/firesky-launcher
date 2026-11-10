@@ -1,3 +1,4 @@
+import java.io.File
 import java.util.Properties
 
 plugins {
@@ -13,13 +14,41 @@ android {
     val local = Properties().apply { rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use(::load) }
     fun setting(key: String) = local.getProperty(key, "").trim()
 
+    // A release has a version, given as -Pfiresky.version=1.2.3 (the release workflow takes it from the tag).
+    // Only releases look for updates. Anything else is a build of your own, version "dev".
+    val release = providers.gradleProperty("firesky.version").orNull?.trim()?.removePrefix("v")
+        ?.takeIf { Regex("\\d+\\.\\d+\\.\\d+").matches(it) }
+
+    // Releases are signed with FireSky's own key, so each one installs over the last. The release
+    // workflow passes it in the environment; on a computer, signing= in local.properties names a file
+    // like ~/.firesky/signing.properties. Without either, the debug key signs it.
+    val keyFile = setting("signing").takeIf { it.isNotEmpty() }?.let { File(it.replaceFirst("~", System.getProperty("user.home"))) }
+    val keys = Properties().apply { keyFile?.takeIf { it.exists() }?.inputStream()?.use(::load) }
+    fun key(env: String, prop: String): String? = System.getenv(env)?.takeIf { it.isNotEmpty() } ?: keys.getProperty(prop)
+    val store = key("FIRESKY_KEYSTORE", "storeFile")?.let(::File)?.takeIf { it.exists() }
+    signingConfigs {
+        if (store != null) create("release") {
+            storeFile = store
+            storePassword = key("FIRESKY_KEYSTORE_PASSWORD", "storePassword")
+            keyAlias = key("FIRESKY_KEY_ALIAS", "keyAlias")
+            keyPassword = key("FIRESKY_KEY_PASSWORD", "keyPassword")
+        }
+    }
+
     defaultConfig {
         applicationId = "com.firesky.launcher"
         minSdk = 26
         // The TV runs Fire OS 7 (Android 9). Targeting it keeps background and listener behaviour predictable.
         targetSdk = 28
-        versionCode = 1
-        versionName = "0.1"
+        // A build of your own is numbered just past the last release, so it installs over it.
+        val last = runCatching {
+            providers.exec { commandLine("git", "describe", "--tags", "--abbrev=0", "--match", "v*"); isIgnoreExitValue = true }
+                .standardOutput.asText.get().trim().removePrefix("v")
+        }.getOrNull()?.takeIf { Regex("\\d+\\.\\d+\\.\\d+").matches(it) } ?: "0.0.0"
+        val (major, minor, patch) = (release ?: last).split('.').map(String::toInt)
+        versionCode = major * 10000 + minor * 100 + patch + if (release == null) 1 else 0
+        versionName = release ?: "$major.$minor.${patch + 1}-dev"
+        buildConfigField("boolean", "RELEASE", (release != null).toString())
 
         // Without a TMDB key, the New and Trending cards are off.
         buildConfigField("String", "TMDB_KEY", "\"${setting("tmdb.key")}\"")
@@ -35,7 +64,7 @@ android {
             // R8 trims and tightens the code, which Compose in particular is built to rely on.
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
@@ -64,6 +93,8 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.12.4")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // QR codes, for setting things up from a phone.
+    implementation("com.google.zxing:core:3.5.3")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     testImplementation(bom)

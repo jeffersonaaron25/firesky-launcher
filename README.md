@@ -25,10 +25,12 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and sends
 - [Features](#features)
 - [Screenshots](#screenshots)
 - [Compatibility](#compatibility)
-- [Installation](#installation)
-- [Configuration](#configuration)
+- [Install](#install)
+- [Settings](#settings)
 - [Usage](#usage)
-- [Updating and uninstalling](#updating-and-uninstalling)
+- [Updates](#updates)
+- [Uninstall](#uninstall)
+- [Build it yourself](#build-it-yourself)
 - [Privacy](#privacy)
 - [How it works](#how-it-works)
 - [Troubleshooting](#troubleshooting)
@@ -70,18 +72,46 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and sends
 
 Switching HDMI inputs (the PlayStation tile) needs a TV with Fire TV built in.
 
-## Installation
+## Install
 
-FireSky isn't on the Appstore. You build it on a computer and install it over your home network with ADB.
+FireSky isn't on the Appstore. It's installed from a computer on the same network as the TV, once. After that, everything happens on the TV, and FireSky updates itself.
 
-**You'll need:**
+**You'll need** a Fire TV on Fire OS 7 or 8 (see [Compatibility](#compatibility)) and a Mac or Linux computer on the same Wi-Fi. No developer tools: the setup downloads what it needs.
 
-- A Mac, Linux, or Windows (with WSL) computer on the same network as the TV
-- [JDK 17](https://adoptium.net/temurin/releases/?version=17)
-- The [Android SDK](https://developer.android.com/studio) with `adb` (Android Studio installs both, or use the command-line tools)
-- Optional: a free [TMDB API key](https://www.themoviedb.org/settings/api) for the New and Trending cards
+1. **On the TV, turn on ADB debugging.**
+   1. Go to **Settings > My Fire TV > About** and select the TV's name 7 times, until it says you're a developer.
+   2. Go to **Settings > My Fire TV > Developer options** and turn on **ADB debugging**.
+   3. Note the TV's IP address under **Settings > My Fire TV > About > Network**.
 
-### Option 1: with a coding agent
+2. **On the computer, run:**
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/jeffersonaaron25/firesky-launcher/main/setup.sh | bash
+   ```
+
+   It asks for the TV's address, downloads Android's `adb` tool from Google and the latest FireSky from this repository, installs it, and switches on what it needs.
+
+3. **On the TV, choose "Always allow from this computer"** when it asks about USB debugging.
+
+4. **Press Home.**
+
+> [!NOTE]
+> **Why a computer?** Fire TV lets an app take over the Home button, and see what's playing, only after a one-time step over ADB. There's no switch for it in the TV's own settings.
+
+> [!TIP]
+> If you use another launcher or Home-button app (Projectivy, Wolf Launcher, Home on Fire, Button Mapper), turn off its Home button handling so they don't compete.
+
+### With the Downloader app
+
+You can also put FireSky on the TV with the [Downloader](https://www.aftvnews.com/downloader/) app, using this address:
+
+```text
+https://github.com/jeffersonaaron25/firesky-launcher/releases/latest/download/FireSky.apk
+```
+
+Open FireSky from your apps. Until the computer step above has been done once, Home still goes to Amazon's home screen, and FireSky's first card shows how to finish.
+
+### With a coding agent
 
 Give your coding agent (such as Claude Code) this prompt:
 
@@ -89,103 +119,76 @@ Give your coding agent (such as Claude Code) this prompt:
 Set up FireSky on my Fire TV by following https://github.com/jeffersonaaron25/firesky-launcher/blob/main/skills/setup-firesky/SKILL.md
 ```
 
-It checks your computer, walks you through turning on ADB, asks how you'd like the dock and units, helps you get a TMDB key, then builds and installs FireSky. The full steps are in [skills/setup-firesky/SKILL.md](skills/setup-firesky/SKILL.md).
+It checks the TV, walks you through turning on ADB, and runs the setup for you. The steps are in [skills/setup-firesky/SKILL.md](skills/setup-firesky/SKILL.md).
 
-### Option 2: manually
+## Settings
 
-1. **Turn on ADB on the TV.**
-   1. Go to **Settings > My Fire TV > About** and select the device name 7 times, until it says you're a developer.
-   2. Go to **Settings > My Fire TV > Developer options** and turn on **ADB debugging**.
-   3. Note the TV's IP address under **Settings > My Fire TV > About > Network**. A DHCP reservation in your router keeps it from changing.
+FireSky's settings are on the TV: hold **OK** on the **Settings** tile (or press **Menu** on it) and choose **FireSky settings**.
 
-2. **Clone the repository and create your settings file.**
+| Setting | What it does |
+|---|---|
+| Temperature, Wind, Clock | °C or °F, mph or km/h, 12 or 24-hour. Auto follows the TV |
+| Streaming country | Where your subscriptions are, for New and Trending. Auto follows the TV |
+| PlayStation tile | Always in the dock on a given HDMI port, or only when a PlayStation is on |
+| New and Trending | Scan the QR code with your phone and paste a free TMDB key there. No typing on the remote |
+| Home button | Whether Home opens FireSky, and how to set it up if not |
+| Version | Installs a downloaded update, or looks for one |
 
-   ```bash
-   git clone https://github.com/jeffersonaaron25/firesky-launcher.git
-   cd firesky-launcher
-   cp local.properties.example local.properties
-   ```
-
-3. **Edit `local.properties`.** Set `tv=` to the TV's IP address. If Android Studio hasn't already added it, also set `sdk.dir=` to your Android SDK path. Everything else is optional; see [Configuration](#configuration).
-
-4. **Build and install.**
-
-   ```bash
-   ./install.sh
-   ```
-
-   The first build takes a few minutes. The first time it connects, the TV asks whether to allow USB debugging: choose **Always allow from this computer**. If the script says it can't reach the TV, accept the prompt and run `./install.sh` again.
-
-5. **Press Home** on the remote.
-
-> [!TIP]
-> If you use another launcher or Home-button app (Projectivy, Wolf Launcher, Home on Fire, Button Mapper), turn off its Home button handling so they don't compete.
-
-## Configuration
-
-All settings live in `local.properties`, which git ignores, so your key and preferences stay on your computer. After changing a setting, run `./install.sh` again.
-
-| Setting | Description | Default |
-|---|---|---|
-| `tv` | The TV's IP address | Required |
-| `tmdb.key` | TMDB API key; turns on the New and Trending cards | Off |
-| `dock` | Dock apps in order, as comma-separated package names | Netflix, Prime Video, YouTube, Disney+, Max, Hulu, Apple TV, Peacock, Paramount+, Plex, Kodi (whichever are installed) |
-| `hide` | Apps to hide entirely, as comma-separated package names | None (other launchers are always hidden) |
-| `ps5.port` | HDMI port of a PlayStation, for a tile that's always in the dock | The tile appears when a PlayStation is detected |
-| `temperature` | `celsius` or `fahrenheit` | From the TV's country |
-| `wind` | `mph` or `kmh` | From the TV's country |
-| `clock` | `12` or `24` | The TV's own setting |
-| `region` | Streaming catalogue country, such as `US` or `GB` | The TV's country |
-| `language` | Language for titles, such as `en-US` | The TV's language |
-
-Example:
-
-```properties
-tv=192.168.1.50
-tmdb.key=your_tmdb_api_key
-dock=com.netflix.ninja,com.amazon.firebat,com.amazon.firetv.youtube,com.disney.disneyplus
-temperature=celsius
-clock=24
-```
-
-To list the package names of the apps on your TV:
-
-```bash
-adb shell pm list packages -3
-```
+To arrange the dock, hold **OK** on a tile to move or hide it.
 
 ### Getting a TMDB API key
 
+The page your phone opens from the QR code walks through this too.
+
 1. [Create a free TMDB account](https://www.themoviedb.org/signup) and confirm your email.
 2. Open [Settings > API](https://www.themoviedb.org/settings/api), choose **Create**, then **Developer**, and fill in the short form. Personal use is fine.
-3. Copy the **API Key** (not the longer "API Read Access Token") into `tmdb.key=`.
+3. Copy the **API Key** (not the longer "API Read Access Token").
 
 ## Usage
 
 | Button | Action |
 |---|---|
 | **OK** | Open the selected app or title |
-| **Hold OK** | Move or hide a dock tile, or hide a card. On the Settings tile, open Amazon's home screen |
+| **Hold OK** or **Menu (☰)** | Options for the selected tile: move or hide it, or hide a card. On the Settings tile: FireSky settings, or Amazon's home screen |
 | **Up** to the temperature in the corner, then **OK** | Weather |
-| **Menu (☰)** | Fire TV's quick settings, as everywhere else on Fire TV |
 | **Home** | Return to FireSky, on the tile you left from. Press again for the first card |
-| **Back** | Close All apps or the weather |
+| **Back** | Close All apps, the weather or the settings |
 
-The Settings tile opens Fire TV's full settings. Press **Home** to come back.
+The Settings tile opens Fire TV's own settings. Press **Back** or **Home** to come back.
 
-## Updating and uninstalling
+## Updates
 
-Update:
+FireSky checks this repository for a new release a few times a day and downloads it in the background. An **Update** card appears at the front of the row: select it and confirm, and FireSky restarts as the new version.
+
+To check now: **FireSky settings > Version**.
+
+## Uninstall
+
+Run this on the computer you set it up from (the TV goes back to Amazon's home screen):
 
 ```bash
-git pull && ./install.sh
+~/.firesky/platform-tools/adb uninstall com.firesky.launcher
 ```
 
-Uninstall (the TV goes back to Amazon's home screen):
+If that computer already had `adb`, use `adb uninstall com.firesky.launcher`.
+
+## Build it yourself
+
+For working on FireSky. You'll need [JDK 17](https://adoptium.net/temurin/releases/?version=17) and the [Android SDK](https://developer.android.com/studio).
 
 ```bash
-adb uninstall com.firesky.launcher
+git clone https://github.com/jeffersonaaron25/firesky-launcher.git
+cd firesky-launcher
+cp local.properties.example local.properties
 ```
+
+Set `tv=` and, if Android Studio hasn't added it, `sdk.dir=` in `local.properties`. Then build, install and set up in one go:
+
+```bash
+./install.sh
+```
+
+`local.properties` can also hold defaults for your own builds: a TMDB key, dock and hidden apps, units and so on (see `local.properties.example`). Builds of your own don't update themselves; releases are built and signed by the release workflow when a version tag is pushed.
 
 ## Privacy
 
@@ -198,8 +201,11 @@ FireSky has no account, no analytics and no server. Everything it learns about y
 | [TMDB](https://www.themoviedb.org) and [Wikidata](https://www.wikidata.org) | Titles, artwork and links to them in your apps (with your own TMDB key). Nothing about what you watch is sent. |
 | [NOAA SWPC](https://www.swpc.noaa.gov) | Northern lights forecast |
 | [CelesTrak](https://celestrak.org) | The space station's orbit |
+| [GitHub](https://github.com/jeffersonaaron25/firesky-launcher/releases) | New releases of FireSky |
 
-`install.sh` grants these permissions over ADB. None of the data leaves the TV.
+When you add a TMDB key from your phone, the TV serves the page itself, on your home network only, and only while the QR code is on screen.
+
+The setup grants these permissions over ADB. None of the data leaves the TV.
 
 | Permission | Why |
 |---|---|
@@ -208,6 +214,7 @@ FireSky has no account, no analytics and no server. Everything it learns about y
 | Notification listener | What's paused, for the Continue card |
 | Storage | Kodi's watch history |
 | Accessibility service | Home button handling |
+| Install apps | Installing FireSky's own updates, after you confirm on screen |
 
 ## How it works
 
@@ -222,11 +229,11 @@ Built with Kotlin and Jetpack Compose.
 <details>
 <summary><b>Home goes to Amazon's home screen</b></summary>
 
-Run `./install.sh` again. If it reports that Home handling didn't stay on, go to **Settings > Accessibility** on the TV and turn on **FireSky Home button**.
+Run the setup command again (step 2 of [Install](#install)). Some Fire OS updates turn ADB debugging off, so check that first. **FireSky settings > Home button** shows whether it's working.
 </details>
 
 <details>
-<summary><b>The script can't reach the TV</b></summary>
+<summary><b>The setup can't reach the TV</b></summary>
 
 Check the IP address, that the computer and TV are on the same network (guest networks often isolate devices), and that ADB debugging is still on. Some Fire OS updates turn it off.
 </details>
@@ -234,7 +241,7 @@ Check the IP address, that the computer and TV are on the same network (guest ne
 <details>
 <summary><b>No New or Trending cards</b></summary>
 
-Check `tmdb.key` in `local.properties`, and that `region` matches the country of your subscriptions. Then run `./install.sh` again.
+In **FireSky settings**, check that **New and Trending** is On and that **Streaming country** is where your subscriptions are.
 </details>
 
 <details>
@@ -278,6 +285,7 @@ Run the unit tests (no TV needed) with:
 - Northern lights forecast from [NOAA SWPC](https://www.swpc.noaa.gov)
 - Streaming links from [Wikidata](https://www.wikidata.org) (CC0)
 - The [Outfit](https://github.com/Outfitio/Outfit-Fonts) typeface (SIL Open Font License 1.1)
+- QR codes by [ZXing](https://github.com/zxing/zxing) (Apache License 2.0)
 
 ## License
 
