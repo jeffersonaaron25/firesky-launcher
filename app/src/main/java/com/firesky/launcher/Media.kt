@@ -29,6 +29,9 @@ object Resume {
 
     fun alias(pkg: String) = ALIAS[pkg] ?: pkg
 
+    /** Called, on the main thread, each time a position is saved. */
+    @Volatile var changed: (() -> Unit)? = null
+
     /** Longest a player plausibly runs without reporting. Beyond this its old state is stale. */
     private const val MAX_GAP_MS = 4 * 3_600_000L
 
@@ -58,6 +61,7 @@ object Resume {
             .putString("pkg", pkg).putLong("pos", pos).putLong("dur", dur)
             .putLong("at", System.currentTimeMillis())
             .apply()
+        changed?.invoke()
     }
 
     /** Shown for 12 hours after you last watched, unless you were within 3 minutes of the end. */

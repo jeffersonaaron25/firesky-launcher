@@ -151,7 +151,11 @@ object Tmdb {
             o.getString("art"), o.getDouble("pop"), o.getString("link").ifBlank { null })
     }
 
-    fun cached(ctx: Context): List<Item> = runCatching { fromJson(JSONArray(cacheFile(ctx).readText())) }.getOrDefault(emptyList())
+    /** The titles as last read or fetched, so coming home doesn't read and parse the file each time. */
+    @Volatile private var held: List<Item>? = null
+
+    fun cached(ctx: Context): List<Item> = held
+        ?: runCatching { fromJson(JSONArray(cacheFile(ctx).readText())) }.getOrDefault(emptyList()).also { if (it.isNotEmpty()) held = it }
 
     fun stale(ctx: Context) = System.currentTimeMillis() - cacheFile(ctx).lastModified() > MAX_AGE_MS
 
@@ -170,6 +174,7 @@ object Tmdb {
         }
         if (all.isEmpty()) return null
         cacheFile(ctx).writeText(toJson(all).toString())
+        held = all
         Log.i(TAG, "loaded ${all.size} titles, ${all.count { it.link != null }} with direct links")
         return all
     }

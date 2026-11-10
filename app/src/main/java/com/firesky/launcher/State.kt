@@ -18,8 +18,11 @@ import kotlin.math.roundToInt
 
 enum class Kind { APP, RESUME, KODI, USUAL, TITLE, PS5, SETTINGS, ALL, WEATHER }
 
-/** Anything you can select: a dock tile, a Tonight card or the weather. The hero shows its label, title and meta. */
-class Card(
+/**
+ * Anything you can select: a dock tile, a Tonight card or the weather. The hero shows its label, title and meta.
+ * Two cards that say the same thing are equal, so a row that hasn't changed isn't drawn again.
+ */
+data class Card(
     val key: String,
     val kind: Kind,
     val pkg: String?,
@@ -71,6 +74,8 @@ class HomeState {
     @Volatile var lastInput = SystemClock.uptimeMillis()
     /** Whether the home screen is what's on the TV. The idle timer only counts while it is. */
     @Volatile var shown = false
+    /** Counts each return to the home screen, so the clock and anything timed are right the moment you're back. */
+    var backTick by mutableIntStateOf(0)
     /** Until then OK is ignored: an app is opening, and a second press would open it again. */
     @Volatile var openingUntil = 0L
 
@@ -240,6 +245,10 @@ class HomeState {
 
     /** The tile that has focus right now, for the key handler. */
     var current: String? = null
+    /** The tile focus has really reached. [current] changes first, a frame or two before focus follows. */
+    var focusAt: String? = null
+    /** The dock and the Tonight row as they're shown, so the key handler needn't work them out on every press. */
+    var rows: List<List<Card>> = emptyList()
 
     fun home() {
         allApps = false
@@ -254,12 +263,23 @@ class HomeState {
 
     /** Back on screen from anywhere: never straight into the idle screen, whatever happened while away. */
     fun back() {
+        backTick++
         shown = true
         idle = false
         lastInput = SystemClock.uptimeMillis()
     }
 
     fun opening() { openingUntil = SystemClock.uptimeMillis() + OPENING_MS }
+
+    /** Nothing is open over the home screen. */
+    val plain get() = !idle && !allApps && !panel && menu == null && moving == null
+
+    /** The first card: where Home and waking put you. */
+    fun first(): String? = (tonight().firstOrNull() ?: dock().firstOrNull())?.key
+
+    /** The tiles on screen in order, and the one selected: what a picture of the home screen shows. */
+    fun shape(selected: String?): String =
+        (if (wx != null) "wx," else "") + tonight().joinToString(",") { it.key } + "|" + dock().joinToString(",") { it.key } + ">" + selected
 
     fun idleDue(now: Long = SystemClock.uptimeMillis()) =
         shown && !idle && !allApps && !panel && menu == null && moving == null && now - lastInput > IDLE_MS

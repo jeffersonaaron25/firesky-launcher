@@ -251,6 +251,9 @@ class Orbit(line1: String, line2: String) {
 
         private fun file(ctx: Context) = File(ctx.filesDir, "iss.tle")
 
+        /** The orbit worked out from the file as it was at this time, so the same file gives the same orbit. */
+        @Volatile private var held: Pair<Long, Orbit>? = null
+
         /** The station's orbit, refreshed daily: it drifts out of date in about a week. */
         fun iss(ctx: Context): Orbit? = runCatching {
             val f = file(ctx)
@@ -262,8 +265,11 @@ class Orbit(line1: String, line2: String) {
                     val tmp = File(f.path + ".part"); tmp.writeText(text); tmp.renameTo(f)
                 }
             }
-            val lines = f.readLines()
-            Orbit(lines.first { it.startsWith("1 ") }, lines.first { it.startsWith("2 ") })
+            val stamp = f.lastModified()
+            held?.takeIf { it.first == stamp }?.second ?: run {
+                val lines = f.readLines()
+                Orbit(lines.first { it.startsWith("1 ") }, lines.first { it.startsWith("2 ") }).also { held = stamp to it }
+            }
         }.getOrNull()
     }
 }

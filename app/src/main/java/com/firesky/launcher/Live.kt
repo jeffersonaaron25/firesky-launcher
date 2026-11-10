@@ -220,9 +220,16 @@ class Painter {
         // Mirrored, so the land can slide sideways as the camera turns without a seam.
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_MIRRORED_REPEAT)
         GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_R16F, POINTS, 4, 0, GLES30.GL_RED, GLES30.GL_HALF_FLOAT, null)
-        val (stars, aurora) = Bake.night()
-        if (cat != null) { stars.recycle(); target(3, 1, w, h) } else texture(1, stars, false, false)
-        texture(2, aurora, false, false)
+        if (cat != null) {
+            // The real sky is drawn into a picture of its own and brings its own aurora, so the painted
+            // stars and aurora would be made and never shown.
+            target(3, 1, w, h)
+            texture(2, Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888), false, false)
+        } else {
+            val (stars, aurora) = Bake.night()
+            texture(1, stars, false, false)
+            texture(2, aurora, false, false)
+        }
         texture(3, Bake.shimmer(), true, false)
         texture(4, Bake.clouds(), true, false)
         texture(5, null, true, true)

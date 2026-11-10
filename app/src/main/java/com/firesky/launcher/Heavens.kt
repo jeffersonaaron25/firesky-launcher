@@ -44,7 +44,13 @@ object Heavens {
     /** ra, dec (radians), magnitude, then colour r g b, per star. */
     const val STAR_STRIDE = 6
 
-    fun catalog(ctx: Context): Catalog {
+    @Volatile private var held: Catalog? = null
+
+    /** Read once and kept: the stars don't change, and reading them takes a moment the first frame can't spare. */
+    @Synchronized
+    fun catalog(ctx: Context): Catalog = held ?: read(ctx).also { held = it }
+
+    private fun read(ctx: Context): Catalog {
         val j = JSONObject(ctx.assets.open("sky.json").bufferedReader().readText())
         val s = j.getJSONArray("stars")
         val stars = FloatArray(s.length() * STAR_STRIDE)
@@ -111,16 +117,20 @@ object Heavens {
     @Volatile var kp = 0.0
     @Volatile private var kpAt = 0L
     @Volatile private var passesAt = 0L
+    @Volatile private var passesFor = ""
 
     /** Fetches the station's orbit and the geomagnetic index as they go stale. Off the main thread. */
     fun refresh(ctx: Context) {
         val here = Place.get(ctx)
         val now = System.currentTimeMillis()
         Orbit.iss(ctx)?.let { o ->
-            if (o !== orbit || now - passesAt > 3 * 3_600_000) {
+            // A day and a half of passes takes thousands of positions to find, so they're found again
+            // only for a new orbit, a new place, or every few hours.
+            if (o !== orbit || here.key != passesFor || now - passesAt > 3 * 3_600_000 || now < passesAt) {
                 orbit = o
                 passes = o.passes(now - 15 * 60_000, now + 36 * 3_600_000, here.lat, here.lon)
                 passesAt = now
+                passesFor = here.key
             }
         }
         if (now - kpAt > 3_600_000) runCatching {
@@ -361,10 +371,15 @@ object Heavens {
     private fun vec(h: Astro.Hz) = doubleArrayOf(cos(h.alt * D) * cos(h.az * D), cos(h.alt * D) * sin(h.az * D), sin(h.alt * D))
     private fun horiz(x: Double, y: Double, z: Double): Astro.Hz { val l = sqrt(x * x + y * y + z * z); return Astro.Hz(asin(z / l) / D, (atan2(y, x) / D + 360) % 360) }
 
+    /** Which showers are active and how strongly. It changes over days, so it's worked out once a minute, not every frame. */
+    private var sources: List<Pair<Shower?, Double>> = emptyList()
+    private var sourcesAt = -1L
+
     private fun spawn(f: Frame, ms: Long, lst: Double, lat: Double, dt: Float, cloud: Int) {
         if (f.dark < .5 || dt <= 0f) return
         val hours = dt / 3600.0
-        val sources = SHOWERS.map { it to rate(it, ms) }.filter { it.second > 0 } + (null to 6.0)
+        val minute = ms / 60_000
+        if (minute != sourcesAt) { sources = SHOWERS.map { it to rate(it, ms) }.filter { it.second > 0 } + (null to 6.0); sourcesAt = minute }
         for ((s, r) in sources) {
             var rate = r
             var radiant: FloatArray? = null

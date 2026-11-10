@@ -7,7 +7,10 @@ import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
+import android.view.Choreographer
+import android.view.KeyEvent
 import android.view.PixelCopy
 import android.view.View
 import androidx.activity.ComponentActivity
@@ -19,6 +22,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -30,6 +35,15 @@ class MainActivity : ComponentActivity(), Actions {
     private var away = false
     private var titlesJob: Job? = null
     private var watchArtJob: Job? = null
+    private var appsJob: Job? = null
+    private var kodiJob: Job? = null
+    /** Until then, a position an app saves is shown at once: the app you just left may only now be saying where you stopped. */
+    private var resumeUntil = 0L
+    /** How the home screen was when you left it: the tile selected, and nothing open over it. */
+    private var leftAt: String? = null
+    private var leftPlain = false
+    /** This return went to the first card, not back to the tile you left. */
+    private var homed = false
     private val main = Handler(Looper.getMainLooper())
     private var landing = false
     private val landAnyway = Runnable { land() }
@@ -37,6 +51,11 @@ class MainActivity : ComponentActivity(), Actions {
     private var drawn = false
     /** The cards are up to date since coming back. */
     private var fresh = false
+    /** The screen has had a frame or two to show what coming back changed. */
+    private var settled = false
+    private var returns = 0
+    /** Out of view since the backdrop was last drawn, which loses its picture until a new frame arrives. */
+    private var stopped = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,15 +73,21 @@ class MainActivity : ComponentActivity(), Actions {
         window.decorView.isSoundEffectsEnabled = false
         HomeKey.mark("starting from scratch")
         s.load(this)
-        s.drawn = { drawn = true; HomeKey.mark("backdrop drawn"); if (fresh) land() }
+        // Usually made already, so the dock is there in the very first frame.
+        Apps.ready()?.let { s.apps = it }
+        s.drawn = { drawn = true; HomeKey.mark("backdrop drawn"); if (fresh && settled) land() }
         s.risen = { HomeKey.risen() }
         s.wx = Weather.cached(this)
         setContent { Home(s, this) }
         // Netflix tells Fire TV what you're watching when it likes, often just after you leave it.
         Watching.changed = { runOnUiThread { lifecycleScope.launch { loadWatching() } } }
+        Resume.changed = { runOnUiThread { if (SystemClock.uptimeMillis() < resumeUntil) s.resume = Resume.get(this) } }
+        // An app installed while the home screen is showing appears on it. One installed while
+        // you're elsewhere is picked up on the way back.
+        Apps.changed = { runOnUiThread { if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) reloadApps() } }
 
         lifecycleScope.launch {
-            s.apps = withContext(Dispatchers.Default) { Apps.load(this@MainActivity) }
+            loadApps()
             refresh()
             ready()
             loadTitles()
@@ -99,7 +124,9 @@ class MainActivity : ComponentActivity(), Actions {
         super.onRestart()
         HomeKey.mark("on screen")
         fresh = false
+        resumeUntil = SystemClock.uptimeMillis() + RESUME_GRACE_MS
         lifecycleScope.launch {
+            loadApps()
             refresh()
             ready()
         }
@@ -108,7 +135,21 @@ class MainActivity : ComponentActivity(), Actions {
     private fun ready() {
         fresh = true
         HomeKey.mark("cards ready")
-        if (drawn) land()
+        if (drawn && settled) land()
+    }
+
+    /**
+     * Back in view. That can be half a second before being resumed, while the app you left finishes
+     * pausing, so the backdrop is asked for now and is already drawn when that moment comes.
+     */
+    override fun onStart() {
+        super.onStart()
+        if (stopped) showBackdrop()
+    }
+
+    private fun showBackdrop() {
+        drawn = !s.liveOk
+        s.live?.resume()
     }
 
     override fun onResume() {
@@ -116,21 +157,35 @@ class MainActivity : ComponentActivity(), Actions {
         HomeKey.front = true
         HomeKey.mark("resumed")
         // Brought back by the TV waking up: the rise plays, from the first card.
-        if (Wake.take()) s.woke()
+        val woke = Wake.take()
+        if (woke) s.woke()
         s.back()
-        drawn = !s.liveOk
-        s.live?.resume()
+        when {
+            // The rise starts from a frame drawn after this moment, as it always has.
+            woke -> showBackdrop()
+            // Only paused, never out of view: the backdrop's picture is still on screen.
+            !stopped -> { drawn = true; s.live?.resume() }
+            // Otherwise it was asked for when this came back into view, and may be there already.
+        }
+        stopped = false
+        homed = false
         if (away) {
             away = false
             // Home brings this task back without a new intent, so this is where that's noticed:
             // back from a tile stays on the tile, and Home on the home screen goes to the first card.
+            homed = !opened
             if (!opened) s.home()
             opened = false
         }
         landing = true
         main.removeCallbacks(landAnyway)
         main.postDelayed(landAnyway, if (s.liveOk) 1500 else 300)
-        if (drawn && fresh) land()
+        // The cover lifts once the screen has drawn a frame with what coming back changed, such as
+        // the first card selected again: two frames from now, the first has been shown.
+        settled = false
+        val frames = Choreographer.getInstance()
+        val now = ++returns
+        frames.postFrameCallback { frames.postFrameCallback { if (now == returns) { settled = true; if (drawn && fresh) land() } } }
     }
 
     /** The screen counts as arrived once the backdrop has drawn and the cards are current. */
@@ -138,12 +193,55 @@ class MainActivity : ComponentActivity(), Actions {
         if (!landing) return
         landing = false
         main.removeCallbacks(landAnyway)
-        HomeKey.arrived(this)
+        // Anything pressed while the picture of the home screen was up is played now, but only if
+        // the real one is laid out as the picture shows, so a press can't land on a different tile.
+        if (!HomeKey.typedAhead) return arrive()
+        val why = when {
+            !fresh -> "the cards weren't up to date in time"
+            !leftPlain -> "something was open over the home screen when you left"
+            s.shape(selected()) != Backdrop.shape -> "the screen has changed since the picture was taken"
+            else -> return playTyped(0)
+        }
+        HomeKey.note("presses on the picture not played: $why")
+        arrive()
+    }
+
+    private fun arrive(atOnce: Boolean = false) {
+        HomeKey.arrived(this, atOnce)
         loadTitles()
+    }
+
+    /** The tile this return ends on. */
+    private fun selected() = if (homed) s.first() else leftAt
+
+    /**
+     * Focus takes a frame or two to reach its tile after coming back, and a press played before
+     * then would start from the wrong one. So this waits, a few frames at most, and if it never
+     * settles the presses are dropped, as they always used to be.
+     */
+    private fun playTyped(frame: Int) {
+        Choreographer.getInstance().postFrameCallback {
+            val settled = HomeKey.front && s.plain && s.focusAt == selected() && s.shape(s.focusAt) == Backdrop.shape
+            when {
+                settled && frame >= 1 -> {
+                    val keys = HomeKey.takeTyped()
+                    arrive(atOnce = true)
+                    val t = SystemClock.uptimeMillis()
+                    for ((code, action) in keys) runCatching { dispatchKeyEvent(KeyEvent(t, t, action, code, 0)) }
+                    HomeKey.note("played ${keys.size} key events pressed on the picture")
+                }
+                frame >= SETTLE_FRAMES || !HomeKey.front -> {
+                    HomeKey.note("presses on the picture not played: the selection didn't settle on ${selected()}, it's on ${s.focusAt}")
+                    arrive()
+                }
+                else -> playTyped(frame + 1)
+            }
+        }
     }
 
     override fun onStop() {
         super.onStop()
+        stopped = true
         // Opened from All apps: it stays up until the app covers it, then it's gone for next time.
         if (opened) s.allApps = false
     }
@@ -155,9 +253,15 @@ class MainActivity : ComponentActivity(), Actions {
         away = true
         landing = false
         main.removeCallbacks(landAnyway)
-        if (!opened) snap()
+        leftAt = s.focusAt
+        leftPlain = s.plain
+        // The picture for next time is taken once Android has been told this screen has stepped
+        // aside, so the app that's opening isn't kept waiting while it's made.
+        main.post(snapNow)
         s.live?.pause()
     }
+
+    private val snapNow = Runnable { snap() }
 
     /**
      * Keeps a picture of the home screen to put up the moment Home is pressed, so it's there at once
@@ -170,6 +274,7 @@ class MainActivity : ComponentActivity(), Actions {
         if (s.idle || s.panel || s.allApps || s.menu != null) return
         val d = window.decorView
         val status = s.rects[STATUS]
+        val shape = s.shape(s.focusAt)
         runCatching {
             val shot = Bitmap.createBitmap(d.width, d.height, Bitmap.Config.ARGB_8888)
             PixelCopy.request(window, shot, { result ->
@@ -181,13 +286,17 @@ class MainActivity : ComponentActivity(), Actions {
                     Canvas(shot).drawBitmap(bg, from, to, null)
                 }
                 Backdrop.home = shot
+                Backdrop.shape = shape
             }, main)
         }.onFailure { HomeKey.note("no picture of the home screen: $it") }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        main.removeCallbacks(snapNow)
         Watching.changed = null
+        Resume.changed = null
+        Apps.changed = null
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -199,24 +308,75 @@ class MainActivity : ComponentActivity(), Actions {
         }
     }
 
+    /** The list of apps, made only if it isn't already, or an app has come or gone since. */
+    private suspend fun loadApps() {
+        val apps = Apps.ready() ?: withContext(Dispatchers.Default) { Apps.get(this@MainActivity) }
+        if (apps !== s.apps) s.apps = apps
+    }
+
+    /** Several reports come for one install, so this waits for them to finish. */
+    private fun reloadApps() {
+        appsJob?.cancel()
+        appsJob = lifecycleScope.launch {
+            delay(1500)
+            loadApps()
+            loadTitles()
+        }
+    }
+
+    private class Used(val history: Usage.History?, val last: Map<String, Usage.LastUse>, val usual: Usage.Usual?, val minutes: Map<String, Double>)
+
+    /**
+     * Brings the cards up to date. None of the three lookups waits on another, so they run side by
+     * side, and everything is put on screen in one go: the rows change once, not card by card.
+     */
     private suspend fun refresh() {
+        val ctx = this
         val candidates = (Apps.DOCK + s.apps.map { it.pkg }).toSet()
-        val history = withContext(Dispatchers.Default) { Usage.history(this@MainActivity) }
-        val lastUsed = withContext(Dispatchers.Default) { Usage.lastUsed(this@MainActivity, history) }
-        val resume = withContext(Dispatchers.Default) { Resume.get(this@MainActivity) }
-        val usual = withContext(Dispatchers.Default) { Usage.usual(history, candidates) }
-        val kodi = withContext(Dispatchers.IO) { Kodi.latest(this@MainActivity) }
-        s.kodi = kodi
-        loadWatching()
-        s.lastUsed = lastUsed
-        s.resume = resume
-        s.usual = usual
-        s.useMinutes = Usage.minutes(history)
+        coroutineScope {
+            val used = async(Dispatchers.Default) {
+                val h = Usage.history(ctx)
+                Used(h, Usage.lastUsed(ctx, h), Usage.usual(h, candidates), Usage.minutes(h))
+            }
+            val kodi = async(Dispatchers.IO) { Kodi.latest(ctx) }
+            val watching = async(Dispatchers.IO) { Watching.latest(ctx) }
+            val u = used.await()
+            val k = kodi.await()
+            val w = watching.await()
+            // Read last, to give the app you just left the longest to say where you stopped.
+            val resume = withContext(Dispatchers.Default) { Resume.get(ctx) }
+            s.kodi = k
+            showWatching(w)
+            s.lastUsed = u.last
+            s.resume = resume
+            s.usual = u.usual
+            s.useMinutes = u.minutes
+            kodiAgain(u.history)
+        }
+    }
+
+    /**
+     * Kodi writes down where you stopped a moment after you leave it, which can be after the look
+     * above. So when Kodi is what you've just left, it's read once more.
+     */
+    private fun kodiAgain(h: Usage.History?) {
+        if (s.app(Kodi.PKG) == null) return
+        val justLeft = h == null || h.sessions.lastOrNull()?.let { it.pkg == Kodi.PKG && System.currentTimeMillis() - it.end < 20_000 } == true
+        if (!justLeft) return
+        kodiJob?.cancel()
+        kodiJob = lifecycleScope.launch {
+            delay(2000)
+            val k = withContext(Dispatchers.IO) { Kodi.latest(this@MainActivity) }
+            val was = s.kodi
+            if (k?.path != was?.path || k?.positionS != was?.positionS || k?.playedAt != was?.playedAt) s.kodi = k
+        }
     }
 
     /** What you're partway through, by name, and each one's picture. */
-    private suspend fun loadWatching() {
-        s.watching = withContext(Dispatchers.IO) { Watching.latest(this@MainActivity) }
+    private suspend fun loadWatching() = showWatching(withContext(Dispatchers.IO) { Watching.latest(this@MainActivity) })
+
+    private fun showWatching(items: List<Watching.Item>) {
+        s.watching = items
         // How much is left of each show's season, and what's coming, from TMDB.
         lifecycleScope.launch(Dispatchers.IO) {
             val found = s.watching.mapNotNull { w -> Shows.refresh(this@MainActivity, w.title, w.season)?.let { w.title to it } }.toMap()
@@ -241,7 +401,12 @@ class MainActivity : ComponentActivity(), Actions {
             val ctx = this@MainActivity
             var items = Tmdb.cached(ctx)
             if (items.isEmpty() || Tmdb.stale(ctx)) items = Tmdb.refresh(ctx) ?: items
-            withContext(Dispatchers.Main) { s.titles = items }
+            withContext(Dispatchers.Main) {
+                s.titles = items
+                // Pictures of titles that have left the list would otherwise be kept for as long as the app runs.
+                val listed = items.mapTo(HashSet()) { "t-${it.key}" }
+                s.thumbs.keys.filter { it.startsWith("t-title:") && it !in listed }.forEach { s.thumbs.remove(it); s.hues.remove(it) }
+            }
             val mine = items.filter { s.app(it.pkg) != null }
             for (t in Tmdb.pick(mine, s.useMinutes, s.hiddenCards, HomeState.MAX_CARDS + 2)) {
                 val key = "t-${t.key}"
@@ -257,7 +422,6 @@ class MainActivity : ComponentActivity(), Actions {
 
     /** Straight into the app: its own screen appears over this one as it starts. */
     private fun leave(c: Card, go: () -> Boolean) {
-        snap()
         opened = true
         s.opening()
         if (!go()) {
@@ -320,5 +484,7 @@ class MainActivity : ComponentActivity(), Actions {
     private companion object {
         /** Room around the clock for its glow and the weather chip growing when selected. */
         const val PAD = 24
+        const val RESUME_GRACE_MS = 2000L
+        const val SETTLE_FRAMES = 6
     }
 }

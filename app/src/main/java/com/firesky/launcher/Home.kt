@@ -6,6 +6,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -53,6 +54,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -223,7 +225,7 @@ private fun handleKey(s: HomeState, act: Actions, e: KeyEvent, fm: FocusManager)
     // The dock and the row stop at their ends. Past the last tile, focus would jump to whatever lies
     // that way, such as a card waiting off screen above the dock.
     if ((dir == FocusDirection.Left || dir == FocusDirection.Right) && !s.allApps) {
-        val row = listOf(s.dock(), s.tonight()).firstOrNull { r -> r.any { it.key == s.current } }
+        val row = s.rows.firstOrNull { r -> r.any { it.key == s.current } }
         val i = row?.indexOfFirst { it.key == s.current } ?: -1
         if (row != null && i == (if (dir == FocusDirection.Right) row.lastIndex else 0)) {
             if (e.type == KeyEventType.KeyDown) Sfx.edge()
@@ -292,6 +294,7 @@ private fun riseAt(t: Float, delay: Float): Float {
 }
 
 private const val WAKE_MS = 1340f
+private const val TICK_MS = 15_000L
 
 // The Tonight row, in design units: where it starts, each card and the gap between them.
 private const val ROW_X = 72f
@@ -303,8 +306,16 @@ private const val ROW_FIT = 1280f - 16f - ROW_X - CARD_W
 @Composable
 private fun Screen(s: HomeState, act: Actions) {
     val z = LocalDz.current
-    var now by remember { mutableStateOf(Calendar.getInstance()) }
-    LaunchedEffect(Unit) { while (true) { now = Calendar.getInstance(); delay(15_000) } }
+    // Time is looked at four times a minute, in step with the clock, and again the moment you come
+    // back. The clock on screen changes on the minute; "5 min ago" and "ends 9:47 PM" keep up too.
+    val tick = produceState(System.currentTimeMillis() / TICK_MS, s.backTick) {
+        while (true) {
+            value = System.currentTimeMillis() / TICK_MS
+            delay(TICK_MS - System.currentTimeMillis() % TICK_MS + 20)
+        }
+    }
+    val minute by remember { derivedStateOf { tick.value * TICK_MS / 60_000 } }
+    val now = remember(minute, s.backTick) { Calendar.getInstance() }
     // Idle: after three minutes untouched, only the wallpaper and the time remain.
     LaunchedEffect(Unit) {
         while (true) {
@@ -312,42 +323,39 @@ private fun Screen(s: HomeState, act: Actions) {
             if (s.idleDue()) s.idle = true
         }
     }
-    val hour = now.get(Calendar.HOUR_OF_DAY)
-    val wallKey = Landscape.keyFor(hour, now.get(Calendar.MINUTE))
-    val late = hour >= 23 || hour < 5
 
-    val tonight = s.tonight()
-    val dock = s.dock()
+    // The two rows are worked out again only when something they show has changed, or time has
+    // moved on, and drawn again only if that made a difference: not on every press of the remote.
+    val tonight by remember { derivedStateOf { tick.value; s.backTick; s.tonight() } }
+    val dock by remember { derivedStateOf { tick.value; s.backTick; s.dock() } }
     val wx = s.wxCard()
-    var focused by remember { mutableStateOf<String?>(null) }
-    SideEffect { s.current = focused }
-    val all = listOfNotNull(wx) + tonight + dock
-    val hero = all.firstOrNull { it.key == focused } ?: tonight.firstOrNull() ?: dock.firstOrNull()
-    val inShelf = tonight.any { it.key == focused } || focused == "wx"
+    // Which tile is selected is read only by the few things that follow it, so moving along a row
+    // redraws the two tiles involved and the hero, not the whole screen.
+    val focused = remember { mutableStateOf<String?>(null) }
+    fun select(k: String?) { focused.value = k; s.current = k }
+    SideEffect { s.rows = listOf(dock, tonight) }
+    val hero = remember {
+        derivedStateOf {
+            val f = focused.value
+            (listOfNotNull(s.wxCard()) + tonight + dock).firstOrNull { it.key == f } ?: tonight.firstOrNull() ?: dock.firstOrNull()
+        }
+    }
+    val inShelf = remember { derivedStateOf { val f = focused.value; f == "wx" || tonight.any { it.key == f } } }
+    val at = remember { derivedStateOf { val f = focused.value; tonight.indexOfFirst { it.key == f } } }
 
-    val tint by animateColorAsState(hero?.hue ?: Color(0xFF6A3A6C), tween(1000), label = "tint")
     val ui by animateFloatAsState(if (s.idle || s.allApps) 0f else 1f, tween(if (s.allApps) 200 else 800), label = "ui")
     val drop by animateFloatAsState(if (s.idle) 1f else 0f, tween(600, easing = FastOutSlowInEasing), label = "drop")
-    val dockA by animateFloatAsState(if (inShelf) .7f else 1f, tween(400), label = "dockA")
+    val dockA = remember { Animatable(1f) }
 
     // The selected tile tilts and catches the light when you land on it, then holds still. A screen
     // that never stops drawing never lets Android settle after switching apps, which keeps the app
     // you just left running for ten seconds more.
     val wob = remember { Animatable(.5f) }
     val shine = remember { Animatable(1f) }
-    var landed by remember { mutableIntStateOf(0) }
-    LaunchedEffect(landed) {
-        if (landed == 0) return@LaunchedEffect
-        launch {
-            shine.snapTo(.3f)
-            delay(250)
-            shine.animateTo(.7f, tween(1600, easing = LinearEasing))
-            shine.snapTo(1f)
-        }
-        wob.animateTo(1f, tween(1000, easing = FastOutSlowInEasing))
-        wob.animateTo(0f, tween(2000, easing = FastOutSlowInEasing))
-        wob.animateTo(.5f, tween(1200, easing = FastOutSlowInEasing))
-    }
+    val landed = remember { mutableIntStateOf(0) }
+    // More cards than fit on screen, so the row slides along to keep the selected one in view.
+    val slide = remember { Animatable(0f) }
+    Follow(s, hero, inShelf, at, tonight.size, landed, wob, shine, slide, dockA)
 
     val reqs = remember { HashMap<String, FocusRequester>() }
     fun req(k: String) = reqs.getOrPut(k) { FocusRequester() }
@@ -358,56 +366,30 @@ private fun Screen(s: HomeState, act: Actions) {
     LaunchedEffect(s.homeTick) {
         if (firstKey == null) return@LaunchedEffect
         // The hero changes at once, so a wake-up doesn't rise with the last thing you selected.
-        focused = firstKey
+        select(firstKey)
         withFrameNanos { }
         focusOn(firstKey)
     }
     // Otherwise focus stays where you left it, unless that tile has gone. Closing All apps goes
     // back to the tile that opened it: whatever caught focus as it closed doesn't count.
-    val keys = all.map { it.key }
+    val keys = (listOfNotNull(wx) + tonight + dock).map { it.key }
     var beforeAll by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(s.allApps) { if (s.allApps) beforeAll = focused }
+    LaunchedEffect(s.allApps) { if (s.allApps) beforeAll = focused.value }
     LaunchedEffect(keys, s.allApps) {
         if (s.allApps || firstKey == null) return@LaunchedEffect
         withFrameNanos { }
         val back = beforeAll?.takeIf { it in keys }
         beforeAll = null
-        focusOn(back ?: if (s.moved && focused in keys) focused else firstKey)
+        focusOn(back ?: if (s.moved && focused.value in keys) focused.value else firstKey)
     }
     LaunchedEffect(s.focusTick) {
         withFrameNanos { }
         focusOn(s.focusKey)
     }
 
-    // Waiting for you to settle means moving quickly along the row costs the backdrop nothing.
-    LaunchedEffect(hero?.key, hero?.hue, s.live) {
-        val c = hero ?: return@LaunchedEffect
-        val id = when (c.kind) {
-            Kind.WEATHER -> null
-            Kind.PS5 -> "ps5"
-            Kind.SETTINGS -> "settings"
-            Kind.ALL -> "all"
-            else -> c.pkg
-        }
-        delay(140)
-        s.live?.focus(id, if (c.kind == Kind.WEATHER) null else c.hue.rgb())
-    }
     // Rain that's on its way shows as cloud first, drifting in from the side the weather is coming from.
     LaunchedEffect(s.wx, s.live) { s.wx?.let { s.live?.weather(if (it.kind == Sky.CLEAR && it.rainSoon) Sky.CLOUDY else it.kind, it.sun, it.cloud, it.windFrom) } }
     LaunchedEffect(s.idle, s.live) { s.live?.idle(s.idle) }
-
-    // More cards than fit on screen, so the row slides along to keep the selected one in view. The
-    // first five sit where they always have; the row only moves once you go past them.
-    val slide = remember { Animatable(0f) }
-    val at = tonight.indexOfFirst { it.key == focused }
-    LaunchedEffect(at, tonight.size) {
-        if (at < 0) return@LaunchedEffect
-        val step = CARD_W + CARD_GAP
-        val most = ((tonight.size - 1) * step - ROW_FIT).coerceAtLeast(0f)
-        val now = slide.value / z.px(1)
-        val want = now.coerceIn(at * step - ROW_FIT, at * step).coerceIn(0f, most)
-        if (want != now) slide.animateTo(z.px(want), tween(320, easing = FastOutSlowInEasing))
-    }
 
     val rise = remember { Animatable(1f) }
     var riseFor by remember { mutableIntStateOf(s.wakeTick) }
@@ -426,8 +408,13 @@ private fun Screen(s: HomeState, act: Actions) {
         alpha = p
         translationY = z.px(20f) * (1 - p)
     }
+    // Whether the rise is under way, not how far along: the frames in between only need drawing.
+    val rising by remember { derivedStateOf { riseNow() < 1f } }
 
-    val tile = TileSet(wob.asState(), shine.asState(), { focused = it.key; landed++ }, act::open, s::openMenu, s.rects)
+    val tile = remember(s, act) {
+        TileSet(wob.asState(), shine.asState(), { select(it.key); s.focusAt = it.key; landed.intValue++ }, act::open, s::openMenu, s.rects)
+    }
+    val allTile = remember(s, act) { TileSet(wob.asState(), shine.asState(), { landed.intValue++ }, act::open, {}, s.rects) }
 
     Box(Modifier.fillMaxSize()) {
         if (s.liveOk) {
@@ -436,12 +423,13 @@ private fun Screen(s: HomeState, act: Actions) {
                 modifier = Modifier.fillMaxSize(),
             )
         } else {
-            Wallpaper(wallKey, tint, if (late) .8f else 1f)
+            val hour = now.get(Calendar.HOUR_OF_DAY)
+            Painted(Landscape.keyFor(hour, now.get(Calendar.MINUTE)), hero, if (hour >= 23 || hour < 5) .8f else 1f)
             Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, .48f to Color.Transparent, 1f to Color.Black.copy(alpha = .78f))))
             Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Color.Black.copy(alpha = .5f), .6f to Color.Transparent)))
         }
 
-        Status(s, wx, now, req("wx"), { focused = it.key }, Modifier.align(Alignment.TopEnd).padding(top = z.d(42), end = z.d(60)).rising(200f))
+        Status(s, wx, now, req("wx"), { select(it.key); s.focusAt = it.key }, Modifier.align(Alignment.TopEnd).padding(top = z.d(42), end = z.d(60)).rising(200f))
 
         Box(Modifier.offset(z.d(72), z.d(176)).graphicsLayer { alpha = ui }.rising(300f)) { Hero(hero) }
 
@@ -469,7 +457,7 @@ private fun Screen(s: HomeState, act: Actions) {
                 .align(Alignment.BottomCenter)
                 .padding(bottom = z.d(26))
                 .rising(540f)
-                .graphicsLayer { alpha = ui * dockA; translationY = z.px(150f) * drop }
+                .graphicsLayer { alpha = ui * dockA.value; translationY = z.px(150f) * drop }
                 .background(Color.White.copy(alpha = .10f), dockShape)
                 .border(1.dp, Color.White.copy(alpha = .15f), dockShape)
                 .padding(horizontal = z.d(18), vertical = z.d(12)),
@@ -483,13 +471,70 @@ private fun Screen(s: HomeState, act: Actions) {
         }
 
         Toast(s, Modifier.align(Alignment.BottomCenter).padding(bottom = z.d(130)))
-        if (s.allApps) AllApps(s, act, TileSet(wob.asState(), shine.asState(), { landed++ }, act::open, {}, s.rects))
+        if (s.allApps) AllApps(s, act, allTile)
         Menu(s)
         Panel(s)
-        if (riseNow() < 1f) {
+        if (rising) {
             Box(Modifier.fillMaxSize().graphicsLayer { alpha = (1 - riseNow() * WAKE_MS / 1100f).coerceIn(0f, 1f) }.background(Color.Black))
         }
     }
+}
+
+/**
+ * Everything that follows the selected tile: its tilt and shine, the backdrop taking its colour,
+ * the row sliding to keep it in view, the dock stepping back. It draws nothing, and sits apart so
+ * that these are all that a move along a row wakes.
+ */
+@Composable
+private fun Follow(
+    s: HomeState, hero: State<Card?>, inShelf: State<Boolean>, at: State<Int>, cards: Int, landed: State<Int>,
+    wob: Animatable<Float, AnimationVector1D>, shine: Animatable<Float, AnimationVector1D>,
+    slide: Animatable<Float, AnimationVector1D>, dockA: Animatable<Float, AnimationVector1D>,
+) {
+    val z = LocalDz.current
+    val n = landed.value
+    LaunchedEffect(n) {
+        if (n == 0) return@LaunchedEffect
+        launch {
+            shine.snapTo(.3f)
+            delay(250)
+            shine.animateTo(.7f, tween(1600, easing = LinearEasing))
+            shine.snapTo(1f)
+        }
+        wob.animateTo(1f, tween(1000, easing = FastOutSlowInEasing))
+        wob.animateTo(0f, tween(2000, easing = FastOutSlowInEasing))
+        wob.animateTo(.5f, tween(1200, easing = FastOutSlowInEasing))
+    }
+
+    // Waiting for you to settle means moving quickly along the row costs the backdrop nothing.
+    val c = hero.value
+    LaunchedEffect(c?.key, c?.hue, s.live) {
+        c ?: return@LaunchedEffect
+        val id = when (c.kind) {
+            Kind.WEATHER -> null
+            Kind.PS5 -> "ps5"
+            Kind.SETTINGS -> "settings"
+            Kind.ALL -> "all"
+            else -> c.pkg
+        }
+        delay(140)
+        s.live?.focus(id, if (c.kind == Kind.WEATHER) null else c.hue.rgb())
+    }
+
+    // The first five cards sit where they always have; the row only moves once you go past them.
+    val i = at.value
+    LaunchedEffect(i, cards) {
+        if (i < 0) return@LaunchedEffect
+        val step = CARD_W + CARD_GAP
+        val most = ((cards - 1) * step - ROW_FIT).coerceAtLeast(0f)
+        val now = slide.value / z.px(1)
+        val want = now.coerceIn(i * step - ROW_FIT, i * step).coerceIn(0f, most)
+        if (want != now) slide.animateTo(z.px(want), tween(320, easing = FastOutSlowInEasing))
+    }
+
+    // The dock steps back while you're among the cards.
+    val shelf = inShelf.value
+    LaunchedEffect(shelf) { dockA.animateTo(if (shelf) .7f else 1f, tween(400)) }
 }
 
 /* ---------- wallpaper ---------- */
@@ -506,6 +551,13 @@ object Walls {
         while (cache.size > 2) cache.remove(cache.keys.first())
         return b
     }
+}
+
+/** The painted scene, washed with the selected tile's colour. */
+@Composable
+private fun Painted(key: String, hero: State<Card?>, dim: Float) {
+    val tint by animateColorAsState(hero.value?.hue ?: Color(0xFF6A3A6C), tween(1000), label = "tint")
+    Wallpaper(key, tint, dim)
 }
 
 @Composable
@@ -548,10 +600,10 @@ private fun Wallpaper(key: String, tint: Color, dim: Float) {
 /* ---------- hero, status, toast ---------- */
 
 @Composable
-private fun Hero(c: Card?) {
+private fun Hero(hero: State<Card?>) {
     val z = LocalDz.current
     AnimatedContent(
-        targetState = c,
+        targetState = hero.value,
         contentKey = { it?.key },
         transitionSpec = {
             (fadeIn(tween(550)) + slideInVertically(tween(550, easing = FastOutSlowInEasing)) { z.px(14f).toInt() }) togetherWith
@@ -578,21 +630,7 @@ private fun Status(s: HomeState, wx: Card?, now: Calendar, req: FocusRequester, 
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(z.d(16)),
     ) {
-        // The space station about to pass overhead, or passing now.
-        val ctx = androidx.compose.ui.platform.LocalContext.current
-        val here = remember(now) { Place.get(ctx) }
-        Heavens.pill(now.timeInMillis, here.lat, here.lon, s.wx?.cloud ?: 0)?.let {
-            Row(
-                Modifier
-                    .background(Color(255, 207, 138).copy(alpha = .2f), RoundedCornerShape(50))
-                    .padding(start = z.d(12), end = z.d(16), top = z.d(6), bottom = z.d(6)),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(z.d(8)),
-            ) {
-                Box(Modifier.size(z.d(9)).background(Color(255, 214, 150), CircleShape))
-                T(it, 19f)
-            }
-        }
+        SkyPill(s)
         s.wx?.rainAt?.let {
             Row(
                 Modifier
@@ -633,6 +671,32 @@ private fun Status(s: HomeState, wx: Card?, now: Calendar, req: FocusRequester, 
             }
         }
         T(Prefs.time(now.get(Calendar.HOUR_OF_DAY), now.get(Calendar.MINUTE)), 54f, 200)
+    }
+}
+
+/**
+ * The space station about to pass overhead, or passing now. It keeps its own time: during a pass
+ * the way to look changes faster than the clock's minute does.
+ */
+@Composable
+private fun SkyPill(s: HomeState) {
+    val z = LocalDz.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val t by produceState(System.currentTimeMillis(), s.backTick) {
+        while (true) { value = System.currentTimeMillis(); delay(15_000) }
+    }
+    val here = remember(t) { Place.get(ctx) }
+    Heavens.pill(t, here.lat, here.lon, s.wx?.cloud ?: 0)?.let {
+        Row(
+            Modifier
+                .background(Color(255, 207, 138).copy(alpha = .2f), RoundedCornerShape(50))
+                .padding(start = z.d(12), end = z.d(16), top = z.d(6), bottom = z.d(6)),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(z.d(8)),
+        ) {
+            Box(Modifier.size(z.d(9)).background(Color(255, 214, 150), CircleShape))
+            T(it, 19f)
+        }
     }
 }
 

@@ -7,7 +7,6 @@ import org.json.JSONObject
 import java.io.File
 import java.net.URLDecoder
 import java.util.Locale
-import kotlin.concurrent.thread
 
 /**
  * What you're partway through, by name. Netflix hands its Continue Watching row to Fire TV for
@@ -182,16 +181,12 @@ object Watching {
     /** Called on the log thread whenever the list changes. */
     @Volatile var changed: (() -> Unit)? = null
 
-    /** Follows the log from this moment, after reading what it still holds. Returns the logcat process. */
-    fun watch(ctx: Context): Process? = runCatching {
+    /** Follows the log from this moment, after reading what it still holds. */
+    fun watch(ctx: Context): LogTail {
         val app = ctx.applicationContext
-        val p = ProcessBuilder("logcat", "-v", "brief", "-b", "main", "-s", "$TAG:I").redirectErrorStream(true).start()
         val r = Reader(localeTag()) { pkg, items -> save(app, pkg, items) }
-        thread(name = "watching", isDaemon = true) {
-            runCatching { p.inputStream.bufferedReader().forEachLine(r::line) }.onFailure { Log.w("FireSkyWatching", "stopped", it) }
-        }
-        p
-    }.onFailure { Log.w("FireSkyWatching", "can't read the log", it) }.getOrNull()
+        return LogTail("watching", listOf("logcat", "-v", "brief", "-b", "main", "-s", "$TAG:I"), r::line)
+    }
 
     @Synchronized
     fun save(ctx: Context, pkg: String, items: List<Item>) {

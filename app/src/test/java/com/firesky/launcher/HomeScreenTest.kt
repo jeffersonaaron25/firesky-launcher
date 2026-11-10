@@ -14,6 +14,7 @@ import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.pressKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -259,6 +260,29 @@ class HomeScreenTest {
         settle()
         press(Key.DirectionCenter)
         assertEquals(listOf(tile), opened)
+    }
+
+    /** What decides whether presses made on a picture of the home screen can be played on the real one. */
+    @Test fun theShapeOfTheScreenFollowsItsTilesAndTheOneSelected() {
+        val first = s.first()
+        assertEquals("t-resume", first)
+        assertEquals(first, s.focusAt)
+        val shape = s.shape(s.focusAt)
+        press(Key.DirectionDown)
+        assertEquals(s.dock().first().key, s.focusAt)
+        assertNotEquals("another tile is selected", shape, s.shape(s.focusAt))
+        assertEquals(shape, s.shape(first))
+        s.resume = null
+        settle()
+        assertNotEquals("a card has gone", shape, s.shape(first))
+    }
+
+    @Test fun aCardThatChangesIsShownWithoutAPress() {
+        rule.onAllNodesWithText("1 min in").assertCountEquals(1)
+        s.resume = Resume.Info("com.netflix.ninja", 300_000, 600_000, System.currentTimeMillis())
+        settle()
+        rule.onAllNodesWithText("5 min in").assertCountEquals(1)
+        rule.onAllNodesWithText("1 min in").assertCountEquals(0)
     }
 
     @Test fun pastTheEndOfTheDockGoesNowhere() {

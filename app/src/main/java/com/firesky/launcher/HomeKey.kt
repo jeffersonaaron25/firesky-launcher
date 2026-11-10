@@ -39,8 +39,12 @@ class HomeKey : AccessibilityService() {
     @Volatile private var pressed = 0L
     @Volatile private var task: ActivityManager.AppTask? = null
 
-    private var log: Process? = null
-    private var watching: Process? = null
+    private var log: LogTail? = null
+    private var watching: LogTail? = null
+
+    /** The cover is a picture of the home screen, put up for a Home press, so a press now is meant for what it shows. */
+    private var typing = false
+    private val typed = TypeAhead()
 
     /**
      * The earliest sign of a Home press that Fire OS lets an app see: its own log line, about a
@@ -51,17 +55,10 @@ class HomeKey : AccessibilityService() {
      * arrives after that, by which time Amazon's home has been on screen for most of a second.
      */
     private fun watchLog() {
-        thread(name = "home-log", isDaemon = true) {
-            runCatching {
-                val p = ProcessBuilder("logcat", "-T", "1", "-v", "brief", "-b", "system", "-s", "ActivityManager:I", "PowerManagerService:I")
-                    .redirectErrorStream(true).start()
-                log = p
-                p.inputStream.bufferedReader().forEachLine { l ->
-                    // Straight from this thread: a moment spent queueing can be what lets Amazon's home in.
-                    if ("START u0" in l && "category.HOME" in l && AMAZON in l) go("home button")
-                    else if ("Waking up from sleep" in l) wake()
-                }
-            }.onFailure { Log.w(TAG, "can't watch the log", it) }
+        log = LogTail("home-log", listOf("logcat", "-T", "1", "-v", "brief", "-b", "system", "-s", "ActivityManager:I", "PowerManagerService:I")) { l ->
+            // Straight from this thread: a moment spent queueing can be what lets Amazon's home in.
+            if ("START u0" in l && "category.HOME" in l && AMAZON in l) go("home button")
+            else if ("Waking up from sleep" in l) wake()
         }
     }
 
@@ -99,12 +96,17 @@ class HomeKey : AccessibilityService() {
         watchLog()
         watching = Watching.watch(this)
         prepare()
+        // The list of apps and the star catalogue take a moment to make, so they're made now, in the
+        // background, and are ready however the home screen is next opened.
+        thread(name = "warm", isDaemon = true, priority = Thread.MIN_PRIORITY) {
+            runCatching { Apps.get(this); Heavens.catalog(this) }.onFailure { Log.w(TAG, "couldn't get ready ahead of time", it) }
+        }
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
         me = null
-        log?.destroy()
-        watching?.destroy()
+        log?.stop()
+        watching?.stop()
         lift()
         return super.onUnbind(intent)
     }
@@ -116,7 +118,10 @@ class HomeKey : AccessibilityService() {
             return true
         }
         // While the screen is covered, keys must not reach Amazon's home underneath.
-        return mask != null
+        if (mask == null) return false
+        // Android takes the event back once this returns, so only what it was is kept.
+        if (typing) typed.keep(e.keyCode, e.action, e.repeatCount)
+        return true
     }
 
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
@@ -178,6 +183,8 @@ class HomeKey : AccessibilityService() {
     private fun cover(dark: Boolean = false) {
         if (mask != null) return
         val pic = if (dark) null else Backdrop.home ?: Backdrop.last ?: scene
+        typed.clear()
+        typing = pic != null && pic === Backdrop.home
         note("cover: ${when (pic) { null -> "black"; Backdrop.home -> "home screen"; Backdrop.last -> "backdrop only"; else -> "painting" }}")
         val v = ImageView(this).apply {
             setBackgroundColor(android.graphics.Color.BLACK)
@@ -197,6 +204,7 @@ class HomeKey : AccessibilityService() {
 
     private fun lift() {
         main.removeCallbacks(giveUp)
+        typing = false; typed.clear()
         val v = mask ?: return
         mask = null
         v.animate().alpha(0f).setDuration(180).withEndAction {
@@ -262,15 +270,21 @@ class HomeKey : AccessibilityService() {
             }
         }
 
-        /** The home screen is up, so the cover can go. */
-        fun arrived(c: Context) {
+        /** The home screen is up, so the cover can go: [atOnce] for right now, from the main thread. */
+        fun arrived(c: Context, atOnce: Boolean = false) {
             Guard.arrived(c)
             me?.let { s ->
                 if (s.mask != null) note("home screen up ${s.since()}")
                 s.task = s.findTask()
-                s.main.post { s.lift() }
+                if (atOnce) s.lift() else s.main.post { s.lift() }
             }
         }
+
+        /** Something has been pressed on the picture of the home screen. Main thread only, like the one below. */
+        val typedAhead get() = me?.typed?.any == true
+
+        /** Those presses, handed over once, for the home screen to act on now that it's there. */
+        fun takeTyped(): List<Pair<Int, Int>> = me?.let { s -> s.typing = false; s.typed.take() } ?: emptyList()
 
         fun openAmazonHome(c: Context): Boolean {
             amazonUntil = SystemClock.uptimeMillis() + 3000
@@ -335,4 +349,78 @@ object Wake {
 object Backdrop {
     @Volatile var home: Bitmap? = null
     @Volatile var last: Bitmap? = null
+    /** Which tiles [home] shows and which is selected (HomeState.shape), so presses made on it are only played on the same layout. */
+    @Volatile var shape: String? = null
+}
+
+/**
+ * Presses made on the picture of the home screen that covers the moment of coming home, kept as key
+ * and action, in order, until the real home screen is there to take them. Only the keys that mean
+ * something on the home screen are kept.
+ */
+class TypeAhead {
+    private val events = ArrayList<Pair<Int, Int>>()
+    private val down = HashSet<Int>()
+
+    val any get() = events.isNotEmpty()
+
+    fun clear() { events.clear(); down.clear() }
+
+    fun keep(key: Int, action: Int, repeat: Int) {
+        if (key !in ARROWS && key !in PRESSES) return
+        if (action == KeyEvent.ACTION_DOWN) {
+            // A key held down repeats, and counts once. A release only counts if its press was seen.
+            if (repeat == 0 && events.size < MAX) { events += key to KeyEvent.ACTION_DOWN; down += key }
+        } else if (action == KeyEvent.ACTION_UP && down.remove(key)) events += key to KeyEvent.ACTION_UP
+    }
+
+    /**
+     * Everything kept, handed over once. OK or Menu still held down is left out: its release would
+     * arrive on its own, or not at all, and a press without one reads as a long hold.
+     */
+    fun take(): List<Pair<Int, Int>> {
+        val out = ArrayList(events)
+        for (k in down) if (k in PRESSES) out.removeAt(out.indexOfLast { it.first == k })
+        clear()
+        return out
+    }
+
+    private companion object {
+        const val MAX = 16
+        val ARROWS = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)
+        val PRESSES = setOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MENU)
+    }
+}
+
+/**
+ * Follows the TV's log a line at a time for as long as it's wanted. If logcat ever stops, or a line
+ * trips something up, it's started again: without the log, Home falls back to slower signs of a
+ * press and the Continue cards stop updating, and nothing would say so.
+ */
+class LogTail(private val name: String, private val command: List<String>, private val line: (String) -> Unit) {
+    @Volatile private var on = true
+    @Volatile private var running: Process? = null
+
+    init {
+        thread(name = name, isDaemon = true) {
+            var wait = 1000L
+            while (on) {
+                val began = SystemClock.uptimeMillis()
+                runCatching {
+                    val p = ProcessBuilder(command).redirectErrorStream(true).start()
+                    running = p
+                    if (!on) p.destroy()
+                    p.inputStream.bufferedReader().forEachLine(line)
+                }.onFailure { Log.w("FireSkyLog", "$name stopped", it) }
+                running?.destroy()
+                if (!on) break
+                // One that keeps stopping straight away is tried less and less often.
+                wait = if (SystemClock.uptimeMillis() - began > 60_000) 1000L else (wait * 2).coerceAtMost(60_000L)
+                HomeKey.note("$name: the log reader stopped, starting it again in ${wait / 1000} s")
+                runCatching { Thread.sleep(wait) }
+            }
+        }
+    }
+
+    fun stop() { on = false; running?.destroy() }
 }

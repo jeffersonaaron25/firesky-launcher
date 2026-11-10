@@ -1,7 +1,9 @@
 package com.firesky.launcher
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ResolveInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -52,7 +54,43 @@ object Apps {
 
     private val GREY = Color(0xFF5A6070)
 
-    fun load(ctx: Context): List<AppEntry> {
+    /*
+     * Drawing every app's banner and icon takes a moment, so the list is made once and kept for as
+     * long as the app runs, and made again only when an app is installed, removed or updated.
+     */
+    @Volatile private var held: List<AppEntry>? = null
+    @Volatile private var stale = false
+    private var watching = false
+
+    /** Called, on any thread, when an app has been installed, removed or updated. */
+    @Volatile var changed: (() -> Unit)? = null
+
+    /** The list if it's already been made and is still right, without waiting. */
+    fun ready(): List<AppEntry>? = held.takeIf { !stale }
+
+    /** The list, made now if need be. Slow the first time, so not for the main thread. */
+    @Synchronized
+    fun get(ctx: Context): List<AppEntry> {
+        watch(ctx.applicationContext)
+        held?.let { if (!stale) return it }
+        // Cleared first: an app that changes while the list is being made means making it again.
+        stale = false
+        return load(ctx).also { held = it }
+    }
+
+    private fun watch(app: Context) {
+        if (watching) return
+        watching = true
+        val f = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED); addAction(Intent.ACTION_PACKAGE_REMOVED); addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addDataScheme("package")
+        }
+        app.registerReceiver(object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) { stale = true; changed?.invoke() }
+        }, f)
+    }
+
+    private fun load(ctx: Context): List<AppEntry> {
         val pm = ctx.packageManager
         val seen = LinkedHashMap<String, ResolveInfo>()
         for (cat in listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)) {
