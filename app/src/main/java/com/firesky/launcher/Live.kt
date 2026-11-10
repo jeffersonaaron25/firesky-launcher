@@ -162,6 +162,11 @@ class Painter {
     var heaven: Heavens.Frame? = null
     /** Which way the clouds drift: 1 leftwards, -1 rightwards, from where the wind at cloud height comes from. */
     var wind = 1f
+    private val drift = CloudDrift()
+    /** A thunderstorm: darker cloud than rain alone, and on the idle screen, lightning. */
+    var storm = false
+    /** How bright the lightning is in the next moving frame, where it struck, its shape, and whether the bolt shows. */
+    var flash = 0f; var boltX = 640f; var boltShape = 0f; var bolt = false
 
     private fun shader(type: Int, src: String): Int {
         val s = GLES30.glCreateShader(type)
@@ -241,7 +246,7 @@ class Painter {
         }
         for (n in listOf(
             "uTop", "uBot", "uSky", "uLay", "uHaze", "uCore", "uGlow", "uCloudC", "uSunP", "uHz", "uWater", "uStarA",
-            "uAuroraA", "uMoon", "uSunA", "uSunR", "uAa", "uT", "uDim", "uLate", "uKind", "uPan", "uLift", "uWind",
+            "uAuroraA", "uMoon", "uSunA", "uSunR", "uAa", "uT", "uDim", "uLate", "uKind", "uPan", "uLift", "uDrift", "uFlash", "uBolt",
         )) loc[n] = GLES30.glGetUniformLocation(prog, n)
         if (cat != null) sky(cat)
         GLES30.glEnableVertexAttribArray(0)
@@ -367,11 +372,15 @@ class Painter {
         GLES30.glUniform1f(loc.getValue("uSunA"), if (hv != null && !hv.sunIn) 0f else v[Sky.SUN_A])
         GLES30.glUniform1f(loc.getValue("uPan"), hv?.pan ?: 0f)
         GLES30.glUniform1f(loc.getValue("uLift"), hv?.lift ?: 0f)
-        GLES30.glUniform1f(loc.getValue("uWind"), wind)
+        GLES30.glUniform1f(loc.getValue("uDrift"), drift.step(SystemClock.uptimeMillis(), wind))
         GLES30.glUniform1f(loc.getValue("uSunR"), v[Sky.SUN_R])
         GLES30.glUniform1f(loc.getValue("uAa"), 1280f / tw)
         GLES30.glUniform1f(loc.getValue("uT"), t)
-        GLES30.glUniform1f(loc.getValue("uDim"), Sky.dimOf(k))
+        GLES30.glUniform1f(loc.getValue("uDim"), if (storm && k == Sky.RAIN) STORM_DIM else Sky.dimOf(k))
+        // Lightning is only in the moving picture: caught in a still, it would stay on screen.
+        val lit = if (falling && storm) flash else 0f
+        GLES30.glUniform1f(loc.getValue("uFlash"), lit)
+        GLES30.glUniform3f(loc.getValue("uBolt"), boltX, boltShape, if (bolt) lit else 0f)
         GLES30.glUniform1f(loc.getValue("uLate"), if (late) .8f else 1f)
         GLES30.glUniform1i(loc.getValue("uKind"), shown)
     }
@@ -410,6 +419,8 @@ class Painter {
     private companion object {
         const val DRIFT_W = 960
         const val DRIFT_H = 540
+        /** A storm greys the scene more than rain does. */
+        const val STORM_DIM = .36f
     }
 }
 
@@ -463,6 +474,13 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
     private val skyF = Heavens.Frame()
     private var cloud = 0
     private var windFrom: Int? = null
+    /** How far the real sky's camera has moved the land down the screen, in the backdrop's 720 units. */
+    @Volatile var lift = 0f
+        private set
+    private var storm = false
+    /** A storm asked for over ADB, to see one without waiting for the weather. */
+    private var stormTest = false
+    private val lightning = Storm()
     /** Something in the sky is moving, so the backdrop is drawing frames until it stops. */
     private var animating = false
     private var skyAcc = 0f
@@ -504,6 +522,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
             if (abs(s) < .3f) (if (s < 0) -.3f else .3f) else s
         } ?: 1f
         painter.heaven = skyF
+        lift = skyF.lift
         if (draw) { painter.heavens(skyF, clock()); lastSkyDraw = SystemClock.uptimeMillis() }
     }
 
@@ -540,6 +559,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 egl(st)
                 cat = runCatching { Heavens.catalog(context) }.onFailure { Log.w(TAG, "no star catalogue", it) }.getOrNull()
                 painter.init(width, height, cat)
+                painter.storm = storm || stormTest
                 painter.weather(shownKind())
                 flow.snap(minuteNow(), sun)
                 sky(0f, true)
@@ -626,6 +646,10 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 flow.drift(dt)
                 odd = !odd
                 skyAcc += dt
+                if (painter.storm) {
+                    painter.flash = lightning.step(dt)
+                    painter.boltX = lightning.x; painter.boltShape = lightning.shape; painter.bolt = lightning.bolt
+                }
                 if (odd) { sky(skyAcc, true); skyAcc = 0f; painter.moving(flow, clock(), lateNow()); swap() }
                 choreo.postFrameCallback(tick)
             }
@@ -674,18 +698,19 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         if (!idle) scene(FADE_S)
     }
 
-    fun weather(kind: Int, sun: Sun, cloud: Int = 0, windFrom: Int? = null) = h.post {
-        this.kind = kind; this.sun = sun; this.cloud = cloud; this.windFrom = windFrom
-        if (ready) { painter.weather(shownKind()); if (!idle) scene(SLOW_FADE_S) }
+    fun weather(kind: Int, sun: Sun, cloud: Int = 0, windFrom: Int? = null, storm: Boolean = false) = h.post {
+        this.kind = kind; this.sun = sun; this.cloud = cloud; this.windFrom = windFrom; this.storm = storm
+        if (ready) { painter.storm = storm || stormTest; painter.weather(shownKind()); if (!idle) scene(SLOW_FADE_S) }
     }
 
-    private fun shownKind() = if (Heavens.cloudTest == 0) Sky.CLEAR else kind
+    private fun shownKind() = if (stormTest) Sky.RAIN else if (Heavens.cloudTest == 0) Sky.CLEAR else kind
 
     /**
      * From adb only (the sender needs the DUMP permission), to look at the sky as it isn't right now:
      *   am broadcast -a com.firesky.launcher.SKY --ei cloud 0 --el ahead 90   a clear sky, 90 minutes on
      *   am broadcast -a com.firesky.launcher.SKY --ei cloud 0 --ez pass true  a minute before the station's next pass
      *   am broadcast -a com.firesky.launcher.SKY --ef kp 8                    a geomagnetic storm
+     *   am broadcast -a com.firesky.launcher.SKY --ez storm true              a thunderstorm
      *   am broadcast -a com.firesky.launcher.SKY                              back to the real sky
      */
     private val test = object : BroadcastReceiver() {
@@ -696,7 +721,8 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
             val next = Heavens.passes.firstOrNull { it.start > now }
             Heavens.ahead = if (i.getBooleanExtra("pass", false) && next != null) next.start - 60_000 - now else i.getLongExtra("ahead", 0) * 60_000
             Log.i(TAG, "sky test: cloud ${Heavens.cloudTest} kp ${Heavens.kpTest} ahead ${Heavens.ahead / 60_000} min, next pass ${next?.let { java.util.Date(it.start) }}")
-            if (ready) { painter.weather(shownKind()); animating = false; if (!idle) scene(SLOW_FADE_S) }
+            stormTest = i.getBooleanExtra("storm", false)
+            if (ready) { painter.storm = storm || stormTest; painter.weather(shownKind()); animating = false; if (!idle) scene(SLOW_FADE_S) }
         }
     }
 

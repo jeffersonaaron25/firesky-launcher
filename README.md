@@ -13,7 +13,7 @@
 
 </div>
 
-FireSky replaces the Fire TV home screen with a quiet one: your apps, what you were watching, what's new on the services you use, and the weather. Behind it is the real sky over your home: the stars, moon and planets where they actually are, the space station passing overhead, meteor showers, the northern lights during strong storms, and live clouds moving with the wind.
+FireSky replaces the Fire TV home screen with a quiet one: your apps, what you were watching, what's new on the services you use, and the weather. Behind it is the real sky over your home: the stars, moon and planets where they actually are, the space station passing overhead, meteor showers, the northern lights during strong storms, live clouds moving with the wind, and lightning when there's a thunderstorm.
 
 No ads, no sponsored rows, no account. It learns your habits on the TV and sends nothing about you anywhere.
 
@@ -44,11 +44,12 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and sends
 - **Continue watching** from Netflix, Kodi or any app that reports playback, with the time it would end.
 - **Usually now:** the app you tend to open at this hour, learned on the TV.
 - **New on your apps:** new and trending films and shows on the services you have installed, plus new episodes and seasons of what you watch. Optional; needs a free TMDB key.
-- **Weather:** now, the next 12 hours and the week, with a heads-up when rain is coming. Select the temperature in the top corner. No API key needed.
+- **Title pages:** the plot, year, rating, running time, genres, cast and TMDB score for a title, with buttons to play it or watch its trailer in YouTube.
+- **Weather:** now, the next 12 hours and the week, with a heads-up when rain is coming. Also wind and gusts, humidity, UV, air quality, the length of the day (or the moon's phase at night), and what's worth looking for in tonight's sky: planets, the space station, meteors, the northern lights. Select the temperature in the top corner. No API key needed.
 - **Your dock, your order.** Pick the apps and their order; it never rearranges itself. Amazon's built-in extras stay out of the way.
 - **Instant Home.** The Home button and waking the TV land on FireSky, not Amazon's home screen.
 - **PlayStation tile** that shows whether the console is on and switches to its input (TVs with Fire TV built in).
-- **Idle mode:** after three minutes untouched, only the sky and the clock remain.
+- **Idle mode:** after three minutes untouched, only the sky and the clock remain, with lightning in a thunderstorm.
 
 ## Screenshots
 
@@ -149,10 +150,11 @@ The page your phone opens from the QR code walks through this too.
 | Button | Action |
 |---|---|
 | **OK** | Open the selected app or title |
-| **Hold OK** or **Menu (☰)** | Options for the selected tile: move or hide it, or hide a card. On the Settings tile: FireSky settings, or Amazon's home screen |
+| **Hold OK** or **Menu (☰)** | Options for the selected tile: move or hide it, or hide a card or see its details. On the Settings tile: FireSky settings, or Amazon's home screen |
+| **Play/Pause** | On a film or show card, its title page. Anywhere else, carry on with what you were last watching |
 | **Up** to the temperature in the corner, then **OK** | Weather |
 | **Home** | Return to FireSky, on the tile you left from. Press again for the first card |
-| **Back** | Close All apps, the weather or the settings |
+| **Back** | Close All apps, the weather, a title page or the settings |
 
 The Settings tile opens Fire TV's own settings. Press **Back** or **Home** to come back.
 
@@ -197,7 +199,7 @@ FireSky has no account, no analytics and no server. Everything it learns about y
 | Service | Used for |
 |---|---|
 | [GeoJS](https://www.geojs.io) or [ipwho.is](https://ipwho.is) | Your approximate location from your IP address, once a week. Only the city-level result is kept. |
-| [Open-Meteo](https://open-meteo.com) | Weather for that location |
+| [Open-Meteo](https://open-meteo.com) | Weather and air quality for that location |
 | [TMDB](https://www.themoviedb.org) and [Wikidata](https://www.wikidata.org) | Titles, artwork and links to them in your apps (with your own TMDB key). Nothing about what you watch is sent. |
 | [NOAA SWPC](https://www.swpc.noaa.gov) | Northern lights forecast |
 | [CelesTrak](https://celestrak.org) | The space station's orbit |

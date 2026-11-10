@@ -44,13 +44,16 @@ data class Card(
 
 enum class MenuAct(val label: String) {
     MOVE("Move"), HIDE("Hide"), HIDE_CARD("Hide this"), RESET("Reset the dock"), AMAZON("Amazon home"), FIRESKY("FireSky settings"),
-    ADD_DOCK("Add to dock"), UNDOCK("Remove from dock"), HIDE_APP("Hide from All apps")
+    ADD_DOCK("Add to dock"), UNDOCK("Remove from dock"), HIDE_APP("Hide from All apps"), DETAILS("Details")
 }
 
 class TileMenu(val card: Card, val items: List<MenuAct>)
 
 /** Where the clock and weather sit on screen. */
 const val STATUS = "status"
+
+/** Where trailers play. */
+const val YOUTUBE = "com.amazon.firetv.youtube"
 
 private val PS5_HUE = Color(0xFF1F58D6)
 private val GREY = Color(0xFF4A5060)
@@ -81,6 +84,10 @@ class HomeState {
     @Volatile var openingUntil = 0L
 
     var panel by mutableStateOf(false)
+    /** A title's own page, when one is open. */
+    var detail by mutableStateOf<Detail?>(null)
+    /** What TMDB says about the titles on show, by [Details.key]. */
+    var details by mutableStateOf<Map<String, Details.Info>>(emptyMap())
     /** FireSky's own settings, and the line selected in them. */
     var settings by mutableStateOf(false)
     var settingsIndex by mutableIntStateOf(0)
@@ -192,8 +199,9 @@ class HomeState {
                 val ep = if (w.season != null && w.episode != null) "S${w.season} E${w.episode}" else null
                 val meta = listOfNotNull(ep, if (left > 60_000) Shows.endsAt(now, left) else null).joinToString(" · ").ifEmpty { a.label }
                 val info = shows[w.title]
+                val name = info?.name?.ifBlank { null } ?: w.title
                 val sub = if (info != null && w.season != null && w.episode != null) listOfNotNull(Shows.rest(info, w.season, w.episode), Shows.coming(info, w.season)).joinToString(" · ") else ""
-                w to Card(w.key, Kind.RESUME, a.pkg, "Continue", w.title, meta, hues[w.key] ?: a.hue, progress = w.progress, hideId = "watch:${w.pkg}:${w.id}", sub = sub)
+                w to Card(w.key, Kind.RESUME, a.pkg, "Continue", name, meta, hues[w.key] ?: a.hue, progress = w.progress, hideId = "watch:${w.pkg}:${w.id}", sub = sub)
             }
         }
         // A new episode or season of something you watch, out in the last couple of days.
@@ -201,7 +209,7 @@ class HomeState {
             val info = shows[w.title] ?: return@mapNotNull null
             val e = Shows.fresh(info, w.season, w.episode) ?: return@mapNotNull null
             app(w.pkg)?.let { a ->
-                Card("t-new-${info.id}", Kind.TITLE, a.pkg, if (e.episode <= 1) "New season" else "New episode", w.title,
+                Card("t-new-${info.id}", Kind.TITLE, a.pkg, if (e.episode <= 1) "New season" else "New episode", info.name.ifBlank { w.title },
                     "S${e.season} E${e.episode} · out ${if (e.date == java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(now))) "today" else "now"}",
                     hues[w.key] ?: a.hue, hideId = "new:${info.id}:${e.season}:${e.episode}", link = w.page)
             }
@@ -252,13 +260,24 @@ class HomeState {
     /** Where OK on a card goes: a named one's own link, worked out now because it expires. */
     fun linkFor(c: Card): String? = watching.firstOrNull { it.key == c.key }?.linkAt(System.currentTimeMillis()) ?: c.link
 
+    /** Which title a card is about, for its page: a New or Trending card's own, or the show you're partway through. */
+    fun detailKey(c: Card): String? = when {
+        c.key.startsWith("t-title:") -> c.key.removePrefix("t-")
+        c.key.startsWith("t-new-") -> c.key.removePrefix("t-new-").toIntOrNull()?.let { Details.key(false, it) }
+        // Only a series: a film you're watching has no season, and its name alone could be some show's.
+        else -> watching.firstOrNull { it.key == c.key && it.season != null }?.let { shows[it.title] }?.let { Details.key(false, it.id) }
+    }
+
+    /** The page for a card, if enough is known about its title to fill one. */
+    fun detailOf(c: Card): Detail? = detailKey(c)?.let(details::get)?.let { Detail(c, it, Detail.acts(c, it, app(YOUTUBE) != null)) }
+
     fun openMenu(c: Card) {
         val items = when {
             c.key.startsWith("all-") -> listOf(if (dock().any { it.dockId == c.pkg }) MenuAct.UNDOCK else MenuAct.ADD_DOCK, MenuAct.HIDE_APP)
             c.dockId == "settings" -> listOf(MenuAct.FIRESKY, MenuAct.MOVE, MenuAct.AMAZON)
             c.dockId == "all" -> listOf(MenuAct.MOVE)
             c.dockId != null -> listOf(MenuAct.MOVE, MenuAct.HIDE)
-            c.hideId != null -> listOf(MenuAct.HIDE_CARD)
+            c.hideId != null -> listOfNotNull(MenuAct.HIDE_CARD, MenuAct.DETAILS.takeIf { detailOf(c) != null })
             else -> return
         } + if (c.dockId != null && edited && !c.key.startsWith("all-")) listOf(MenuAct.RESET) else emptyList()
         menuIndex = 0; menuArmed = false
@@ -303,6 +322,7 @@ class HomeState {
         allApps = false
         idle = false
         panel = false
+        detail = null
         menu = null
         moving = null
         moved = false
@@ -321,7 +341,7 @@ class HomeState {
     fun opening() { openingUntil = SystemClock.uptimeMillis() + OPENING_MS }
 
     /** Nothing is open over the home screen. */
-    val plain get() = !idle && !allApps && !panel && menu == null && moving == null
+    val plain get() = !idle && !allApps && !panel && detail == null && menu == null && moving == null
 
     /** The first card: where Home and waking put you. */
     fun first(): String? = (tonight().firstOrNull() ?: dock().firstOrNull())?.key
@@ -331,7 +351,7 @@ class HomeState {
         (if (wx != null) "wx," else "") + tonight().joinToString(",") { it.key } + "|" + dock().joinToString(",") { it.key } + ">" + selected
 
     fun idleDue(now: Long = SystemClock.uptimeMillis()) =
-        shown && !idle && !allApps && !panel && menu == null && moving == null && now - lastInput > IDLE_MS
+        shown && !idle && !allApps && !panel && detail == null && menu == null && moving == null && now - lastInput > IDLE_MS
 
     fun woke() {
         home()

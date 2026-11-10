@@ -147,6 +147,10 @@ interface Actions {
     fun phone(open: Boolean) {}
     /** Installs the downloaded release, or looks for one. */
     fun update() {}
+    /** Plays a title's trailer, for [c]'s page. */
+    fun trailer(c: Card, link: String) {}
+    /** The full-size picture for a title's page. Null leaves the card's own smaller one. */
+    suspend fun art(c: Card): ImageBitmap? = null
 }
 
 /** Everything is laid out in the mock's 1280x720 design units and scaled to the screen. */
@@ -212,6 +216,7 @@ private fun handleKey(s: HomeState, act: Actions, e: KeyEvent, fm: FocusManager)
         return true
     }
     if (s.settings) return settingsKey(s, act, e)
+    s.detail?.let { return detailKey(s, act, it, e) }
     s.menu?.let { return menuKey(s, act, it, e) }
     s.moving?.let { return moveKey(s, it, e) }
     if (s.panel) {
@@ -231,6 +236,7 @@ private fun handleKey(s: HomeState, act: Actions, e: KeyEvent, fm: FocusManager)
         if (up) { s.allApps = false; Sfx.back() }
         return true
     }
+    if (playKey(s, act, e)) return true
     // Arrows move focus here so each step can play its note, and a dead end can say so.
     val dir = when (e.key) {
         Key.DirectionLeft -> FocusDirection.Left
@@ -293,6 +299,7 @@ private fun pick(s: HomeState, act: Actions, m: TileMenu) {
         MenuAct.ADD_DOCK -> c.pkg?.let(s::addToDock)
         MenuAct.UNDOCK -> { s.hide(c, null); s.toast = "${c.title} is out of the dock" }
         MenuAct.HIDE_APP -> c.pkg?.let(s::hideApp)
+        MenuAct.DETAILS -> s.detail = s.detailOf(c)
     }
 }
 
@@ -409,7 +416,7 @@ private fun Screen(s: HomeState, act: Actions) {
     }
 
     // Rain that's on its way shows as cloud first, drifting in from the side the weather is coming from.
-    LaunchedEffect(s.wx, s.live) { s.wx?.let { s.live?.weather(if (it.kind == Sky.CLEAR && it.rainSoon) Sky.CLOUDY else it.kind, it.sun, it.cloud, it.windFrom) } }
+    LaunchedEffect(s.wx, s.live) { s.wx?.let { s.live?.weather(if (it.kind == Sky.CLEAR && it.rainSoon) Sky.CLOUDY else it.kind, it.sun, it.cloud, it.windFrom, it.storm) } }
     LaunchedEffect(s.idle, s.live) { s.live?.idle(s.idle) }
 
     val rise = remember { Animatable(1f) }
@@ -494,6 +501,7 @@ private fun Screen(s: HomeState, act: Actions) {
         if (s.allApps) AllApps(s, act, allTile)
         Menu(s)
         Panel(s)
+        DetailLayer(s, act)
         SettingsScreen(s, act)
         // Last, so a message sent from All apps or the settings is seen above them, and down at the
         // edge there, clear of their rows.

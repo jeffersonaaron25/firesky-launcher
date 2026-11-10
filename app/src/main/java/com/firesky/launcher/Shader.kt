@@ -222,7 +222,9 @@ uniform float uLate;
 uniform int uKind;
 uniform float uPan;
 uniform float uLift;
-uniform float uWind;
+uniform float uDrift;
+uniform float uFlash;
+uniform vec3 uBolt;
 
 const float W = 1280.0;
 const float H = 720.0;
@@ -249,6 +251,16 @@ vec3 sky(vec2 p, float hz) {
     if (uAuroraA > 0.01) c += texture(uAurora, uv).rgb * uAuroraA;
     if (uSunA > 0.01) c = orb(c, p, uSunP * vec2(W, H), uSunR, uCore, uGlow, uSunA);
     if (uMoon > 0.01) c = orb(c, p, vec2(0.8 * W, 0.18 * H), 16.0, vec3(0.933, 0.949, 1.0), vec3(0.784, 0.843, 1.0), uMoon);
+    if (uBolt.z > 0.003) {
+        // A bolt of lightning, in the sky and so behind the mountains: a thin line from the cloud down,
+        // wandering further the lower it gets. Its kinks are borrowed from the ridges, which are jagged already.
+        float yy = p.y / hz;
+        // Read back and forth along the ridge, never off one end and on at the other, so the line can't break.
+        float j = texture(uRidge, vec2(abs(fract(yy * 0.155 + uBolt.y) * 2.0 - 1.0), 0.125)).r / 200.0
+            + 0.35 * texture(uRidge, vec2(abs(fract(yy * 0.85 + uBolt.y * 3.1) * 2.0 - 1.0), 0.375)).r / 160.0;
+        float d = abs(p.x - (uBolt.x + (j - 0.6) * 130.0 * (0.25 + yy)));
+        c += vec3(0.88, 0.92, 1.0) * uBolt.z * (smoothstep(2.4, 0.5, d) + 0.3 * smoothstep(16.0, 0.0, d));
+    }
     return c;
 }
 
@@ -279,21 +291,30 @@ vec3 scene(vec2 p) {
 vec3 weather(vec3 c, vec2 p) {
     if (uKind == 0) return c;
     if (uKind <= 3) {
-        float a = texture(uCloud, vec2(p.x / 1800.0 + uT * 0.0012 * uWind, p.y / 340.0)).a;
-        float b = texture(uCloud, vec2(p.x / 1200.0 + uT * 0.002 * uWind + 0.37, (p.y + 40.0) / 300.0)).a;
-        c = mix(c, uCloudC, clamp(a + b * 0.7, 0.0, 1.0) * (uKind == 1 ? 0.9 : 0.75));
+        float a = texture(uCloud, vec2(p.x / 1800.0 + uDrift * 0.0012, p.y / 340.0)).a;
+        float b = texture(uCloud, vec2(p.x / 1200.0 + uDrift * 0.002 + 0.37, (p.y + 40.0) / 300.0)).a;
+        float cover = clamp(a + b * 0.7, 0.0, 1.0);
+        c = mix(c, uCloudC, cover * (uKind == 1 ? 0.9 : 0.75));
+        if (uFlash > 0.003) {
+            // Lightning lights the cloud from inside: most where it struck and high up, least in the gaps.
+            float near = exp(-abs(p.x - uBolt.x) / 420.0);
+            float up = 1.0 - smoothstep(H * 0.3, H * 0.8, p.y);
+            c += vec3(0.76, 0.83, 1.0) * uFlash * (0.07 + 0.5 * cover) * (0.3 + 0.7 * near) * (0.35 + 0.65 * up);
+        }
     }
+    // Rain and snow fall by the clock, which starts again every hour: each of their speeds fits a
+    // whole number of times into that hour, so nothing jumps when it does.
     if (uKind == 2) {
         float s = p.x + p.y * 0.21;
         float a = texture(uFx, vec2(s / 512.0, p.y / 512.0 - uT * 1.7)).a;
         float b = texture(uFx, vec2(s / 340.0 + 0.31, p.y / 340.0 - uT * 2.1)).a;
         c = mix(c, vec3(0.804, 0.871, 0.961), clamp(a + b * 0.7, 0.0, 1.0) * 0.38);
     } else if (uKind == 3) {
-        float a = texture(uFx, vec2(p.x / 512.0 + sin(uT * 0.7 + p.y * 0.012) * 0.02, p.y / 512.0 - uT * 0.16)).a;
-        float b = texture(uFx, vec2(p.x / 300.0 + 0.5 + sin(uT * 0.9 + p.y * 0.02) * 0.03, p.y / 300.0 - uT * 0.22)).a;
+        float a = texture(uFx, vec2(p.x / 512.0 + sin(uT * 0.69987703 + p.y * 0.012) * 0.02, p.y / 512.0 - uT * 0.16)).a;
+        float b = texture(uFx, vec2(p.x / 300.0 + 0.5 + sin(uT * 0.90058989 + p.y * 0.02) * 0.03, p.y / 300.0 - uT * 0.22)).a;
         c = mix(c, vec3(1.0), clamp(a + b * 0.8, 0.0, 1.0) * 0.82);
     } else if (uKind == 4) {
-        float a = texture(uCloud, vec2(p.x / 2600.0 + uT * 0.0009, (p.y - 300.0) / 420.0)).a;
+        float a = texture(uCloud, vec2(p.x / 2600.0 + uDrift * 0.0009, (p.y - 300.0) / 420.0)).a;
         float band = smoothstep(280.0, 380.0, p.y) * (1.0 - smoothstep(620.0, 720.0, p.y));
         c = mix(c, vec3(0.886, 0.906, 0.933), a * 0.85 * band);
     }

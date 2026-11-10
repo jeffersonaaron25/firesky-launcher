@@ -14,7 +14,11 @@ import kotlin.math.roundToInt
  */
 object Shows {
     class Ep(val season: Int, val episode: Int, val date: String)
-    class Info(val id: Int, val runtimes: Map<Int, List<Int>>, val next: Ep?, val last: Ep?)
+    class Info(
+        val id: Int, val runtimes: Map<Int, List<Int>>, val next: Ep?, val last: Ep?,
+        /** The show's name in your language. The app's own can be in whichever language its profile is set to. */
+        val name: String = "",
+    )
 
     private const val MAX_AGE_MS = 12 * 3_600_000L
     private fun file(ctx: Context) = File(ctx.filesDir, "shows.json")
@@ -29,12 +33,12 @@ object Shows {
         if (!Tmdb.on) return null
         val store = all(ctx)
         val old = store.optJSONObject(title)
-        if (old != null && System.currentTimeMillis() - old.optLong("at") < MAX_AGE_MS && (season == null || old.optJSONObject("runtimes")?.has("$season") == true)) return parse(old)
+        if (old != null && System.currentTimeMillis() - old.optLong("at") < MAX_AGE_MS && (season == null || old.optJSONObject("runtimes")?.has("$season") == true) && old.has("name")) return parse(old)
         return runCatching {
             val id = old?.optInt("id")?.takeIf { it > 0 }
                 ?: Tmdb.api("/search/tv", "query" to title).getJSONArray("results").optJSONObject(0)?.getInt("id") ?: return null
-            val d = Tmdb.api("/tv/$id")
-            val o = JSONObject().put("id", id).put("at", System.currentTimeMillis())
+            val d = Tmdb.api("/tv/$id", "language" to Prefs.language)
+            val o = JSONObject().put("id", id).put("at", System.currentTimeMillis()).put("name", d.optString("name"))
             d.optJSONObject("next_episode_to_air")?.let { o.put("next", ep(it)) }
             d.optJSONObject("last_episode_to_air")?.let { o.put("last", ep(it)) }
             val runtimes = old?.optJSONObject("runtimes") ?: JSONObject()
@@ -54,7 +58,7 @@ object Shows {
         val rt = o.optJSONObject("runtimes") ?: JSONObject()
         val map = rt.keys().asSequence().associate { k -> k.toInt() to rt.getJSONArray(k).let { a -> List(a.length()) { a.getInt(it) } } }
         fun e(n: String) = o.optJSONObject(n)?.let { Ep(it.getInt("s"), it.getInt("e"), it.getString("date")) }
-        return Info(o.getInt("id"), map, e("next"), e("last"))
+        return Info(o.getInt("id"), map, e("next"), e("last"), o.optString("name"))
     }
 
     /** "ends 9:47 PM" if you start or carry on now. */

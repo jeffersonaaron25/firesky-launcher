@@ -34,17 +34,21 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 private val RAIN = Color(0xFF7FB4FF)
@@ -102,6 +106,13 @@ fun Panel(s: HomeState) {
         exit = fadeOut(tween(250)),
     ) {
         val w = s.wx ?: return@AnimatedVisibility
+        val ctx = LocalContext.current
+        // Worked out as the panel opens: the moon and tonight's sky don't change while you read it.
+        val now = remember(w) { System.currentTimeMillis() }
+        val here = remember(w) { Place.get(ctx) }
+        val night = remember(w) { Calendar.getInstance().run { get(Calendar.HOUR_OF_DAY) * 60 + get(Calendar.MINUTE) } !in w.sun.rise..w.sun.set }
+        val moon = remember(w) { runCatching { Almanac.moon(now, here.lat, here.lon) }.getOrNull() }
+        val sky = remember(w) { runCatching { Almanac.tonight(w, now, here.lat, here.lon) }.getOrDefault(emptyList()) }
         Box(Modifier.fillMaxSize().background(Color(0xFF0A0D15))) {
             // A 160-pixel picture stretched to the screen is already soft, which is the frost.
             glass?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds, alpha = .55f) }
@@ -116,18 +127,28 @@ fun Panel(s: HomeState) {
                     Spacer(Modifier.height(z.d(6)))
                     T("Feels ${w.feels}° · Wind ${w.wind} ${Prefs.windUnit}", 22f, 400, .85f)
                     Spacer(Modifier.height(z.d(40)))
-                    SunArc(w.sun)
+                    SunArc(w.sun, if (night) Astro.moonLit(now).toFloat() else null, Astro.moonWaxing(now) == (here.lat >= 0))
                     Spacer(Modifier.height(z.d(6)))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         T(clock(w.sun.rise), 19f, 400, .8f)
                         T(clock(w.sun.set), 19f, 400, .8f)
                     }
+                    // By day, how long the day is; by night, the moon that's drawn in the arc.
+                    val line = if (night) moon else w.more.daylight?.let { Almanac.daylight(it, w.more.daylightNext) }
+                    line?.let {
+                        Spacer(Modifier.height(z.d(14)))
+                        T(it, 19f, 400, .8f)
+                    }
+                    Spacer(Modifier.height(z.d(22)))
+                    Readings(w)
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(z.d(22))) {
                     // With no rain coming the chart would be an empty line, so the words say it alone.
                     Section(w.rainLine) { if (w.rainSoon) RainBars(w.rain) }
                     Section("Next 12 hours") { Hours(w) }
                     Section("This week") { Days(w) }
+                    // With rain on the chart there's no room for the sky, and no sky to see either.
+                    if (sky.isNotEmpty() && !w.rainSoon) Section("Tonight's sky") { Notes(sky) }
                 }
             }
         }
@@ -144,8 +165,64 @@ private fun Section(title: String, body: @Composable () -> Unit) {
     }
 }
 
+/** The smaller readings, two to a row. Any the forecast didn't have are left out. */
 @Composable
-private fun SunArc(sun: Sun) {
+private fun Readings(w: Weather.Wx) {
+    val z = LocalDz.current
+    val m = w.more
+    val all = listOfNotNull(
+        m.windAt?.let { "Wind from" to Heavens.compass(it.toDouble()) + (m.gusts?.let { g -> " · gusts $g ${Prefs.windUnit}" } ?: "") },
+        m.humidity?.let { "Humidity" to "$it%" },
+        m.uv?.let { "UV today" to "${it.roundToInt()} · ${Weather.uvWord(it)}" },
+        m.air?.let { "Air quality" to "$it · ${Weather.airWord(it)}" },
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(z.d(14))) {
+        all.chunked(2).forEach { pair ->
+            Row(Modifier.fillMaxWidth()) {
+                pair.forEach { (label, value) ->
+                    Column(Modifier.weight(1f)) {
+                        T(label.uppercase(), 15f, 500, .7f, .08f)
+                        Spacer(Modifier.height(z.d(2)))
+                        T(value, 20f, 500)
+                    }
+                }
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun Notes(notes: List<Almanac.Note>) {
+    val z = LocalDz.current
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(z.d(18))) {
+        notes.forEach { n ->
+            Column(Modifier.weight(1f)) {
+                T(n.label.uppercase(), 15f, 500, .7f, .08f)
+                Spacer(Modifier.height(z.d(2)))
+                T(n.main, 20f, 500)
+                T(n.sub, 17f, 400, .8f)
+            }
+        }
+    }
+}
+
+/** The moon as it looks tonight: [lit] of its face, on the right when [rightLit]. */
+internal fun DrawScope.moonDisc(c: Offset, r: Float, lit: Float, rightLit: Boolean) {
+    drawCircle(Color.White.copy(alpha = .14f), r, c)
+    val bulge = r * kotlin.math.abs(1 - 2 * lit)
+    val shape = Path().apply {
+        // The lit edge of the disc, top to bottom, then back up along the line between light and shade.
+        arcTo(Rect(c.x - r, c.y - r, c.x + r, c.y + r), 270f, 180f, true)
+        arcTo(Rect(c.x - bulge, c.y - r, c.x + bulge, c.y + r), 90f, if (lit > .5f) 180f else -180f, false)
+        close()
+    }
+    withTransform({ if (!rightLit) scale(-1f, 1f, c) }) { drawPath(shape, Color(0xFFEEF2FF)) }
+}
+
+/** The sun on its way across the day. At night the arc is empty, so the moon is drawn in it, in its phase. */
+@Composable
+private fun SunArc(sun: Sun, moonLit: Float? = null, rightLit: Boolean = true) {
     val z = LocalDz.current
     Canvas(Modifier.fillMaxWidth().height(z.d(118))) {
         val c = Calendar.getInstance()
@@ -160,7 +237,7 @@ private fun SunArc(sun: Sun) {
             drawArc(SUN_COL, 180f, 180f * t, false, box.topLeft, box.size, style = Stroke(z.px(2.5f), cap = StrokeCap.Round))
             val a = PI * t
             drawCircle(SUN_COL, z.px(8f), Offset(cx - rx * cos(a).toFloat(), base - ry * sin(a).toFloat()))
-        }
+        } else if (moonLit != null) moonDisc(Offset(cx, base - ry * .5f), z.px(17f), moonLit, rightLit)
     }
 }
 

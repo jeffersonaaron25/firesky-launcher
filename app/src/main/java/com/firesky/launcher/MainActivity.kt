@@ -2,6 +2,7 @@ package com.firesky.launcher
 
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Rect
 import android.os.Bundle
@@ -16,6 +17,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -286,7 +289,7 @@ class MainActivity : ComponentActivity(), Actions {
     private fun snap() {
         val bg = s.live?.frame() ?: return
         Backdrop.last = bg
-        if (s.idle || s.panel || s.allApps || s.menu != null) return
+        if (s.idle || s.panel || s.detail != null || s.allApps || s.menu != null) return
         val d = window.decorView
         val status = s.rects[STATUS]
         val shape = s.shape(s.focusAt)
@@ -423,17 +426,44 @@ class MainActivity : ComponentActivity(), Actions {
                 s.thumbs.keys.filter { it.startsWith("t-title:") && it !in listed }.forEach { s.thumbs.remove(it); s.hues.remove(it) }
             }
             val mine = items.filter { s.app(it.pkg) != null }
-            for (t in Tmdb.pick(mine, s.useMinutes, s.hiddenCards, HomeState.MAX_CARDS + 2)) {
+            val picks = Tmdb.pick(mine, s.useMinutes, s.hiddenCards, HomeState.MAX_CARDS + 2)
+            for (t in picks) {
                 val key = "t-${t.key}"
                 if (key in s.thumbs) continue
                 val art = Tmdb.art(ctx, t.backdrop)?.let(Tmdb::card) ?: continue
                 withContext(Dispatchers.Main) { s.hues[key] = Color(art.accent); s.thumbs[key] = art.thumb }
             }
+            loadDetails(picks)
             val title = s.kodi?.title ?: return@launch
             val art = Tmdb.find(ctx, title)?.let { Tmdb.art(ctx, it) }?.let(Tmdb::card) ?: return@launch
             withContext(Dispatchers.Main) { s.hues["t-kodi"] = Color(art.accent); s.thumbs["t-kodi"] = art.thumb }
         }
     }
+
+    /**
+     * What each title's page will say, for the cards on show and the shows you're partway through.
+     * What's already kept goes up first; anything missing or a week old is then asked for.
+     */
+    private suspend fun loadDetails(picks: List<Tmdb.Item>) {
+        val ctx = this
+        val want = (picks.map { it.movie to it.id } + s.watching.filter { it.season != null }.mapNotNull { s.shows[it.title] }.map { false to it.id }).distinct()
+        suspend fun show(read: (Boolean, Int) -> Details.Info?) {
+            val got = want.mapNotNull { (movie, id) -> read(movie, id) }.associateBy { it.key }
+            withContext(Dispatchers.Main) { if (got.keys != s.details.keys || got.values.any { s.details[it.key] !== it }) s.details = got }
+        }
+        show { movie, id -> Details.cached(ctx, Details.key(movie, id)) }
+        show { movie, id -> Details.get(ctx, movie, id) }
+    }
+
+    /** The picture a title's page shows across the screen: TMDB's, at its full size. */
+    override suspend fun art(c: Card): ImageBitmap? = withContext(Dispatchers.IO) {
+        val path = s.titles.firstOrNull { "t-${it.key}" == c.key }?.backdrop ?: Tmdb.find(this@MainActivity, c.title)
+        path?.let { Tmdb.art(this@MainActivity, it) }?.let { f ->
+            runCatching { BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 })?.asImageBitmap() }.getOrNull()
+        }
+    }
+
+    override fun trailer(c: Card, link: String) = leave(c) { view(link, YOUTUBE) }
 
     /** Straight into the app: its own screen appears over this one as it starts. */
     private fun leave(c: Card, go: () -> Boolean) {
@@ -492,7 +522,9 @@ class MainActivity : ComponentActivity(), Actions {
             Prefs.REGION, Prefs.TMDB -> {
                 titlesJob?.cancel()
                 Tmdb.forget(this)
+                Details.forget(this)
                 s.titles = emptyList()
+                s.details = emptyMap()
                 loadTitles()
             }
         }

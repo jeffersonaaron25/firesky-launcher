@@ -49,4 +49,23 @@ class ShowsTest {
         assertEquals("S3 E1 · out today", fresh.meta)
         assertEquals("https://www.netflix.com/title/10000001", fresh.link)
     }
+
+    /** Netflix names a show in whatever language its profile uses. The card says what the show is called in yours. */
+    @Test fun aShowIsCalledWhatItsCalledInYourLanguage() {
+        val theirs = "Los guardianes del faro"
+        val s = HomeState().apply {
+            apps = listOf(AppEntry("com.netflix.ninja", "Netflix", Intent(), null, null, Color.Red))
+            watching = listOf(Watching.Item("com.netflix.ninja", "SHOW1", theirs, 2, 1, null, null, 0, "https://www.netflix.com/title/10000001", 0, 2617000, System.currentTimeMillis() - 3_600_000))
+        }
+        // Until TMDB has answered, the app's own name is all there is.
+        assertEquals(theirs, s.tonight().first().title)
+        val known = Shows.Info(900001, mapOf(2 to listOf(44, 46)), null, Shows.Ep(3, 1, inDays(0)), "The Lighthouse Keepers")
+        s.shows = mapOf(theirs to known)
+        val row = s.tonight()
+        assertEquals("The Lighthouse Keepers", row.first().title)
+        assertEquals("The Lighthouse Keepers", row.first { it.key == "t-new-900001" }.title)
+        // And a show TMDB gave no name for keeps the app's.
+        s.shows = mapOf(theirs to show())
+        assertEquals(theirs, s.tonight().first().title)
+    }
 }
