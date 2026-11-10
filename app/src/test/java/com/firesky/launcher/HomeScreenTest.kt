@@ -35,6 +35,7 @@ class HomeScreenTest {
 
     private val opened = mutableListOf<String>()
     private var amazon = 0
+    private var quick = 0
     private val s = HomeState()
     private val act = object : Actions {
         override fun open(c: Card) {
@@ -44,6 +45,7 @@ class HomeScreenTest {
             }
         }
         override fun amazonHome() { amazon++ }
+        override fun quickSettings() { quick++ }
     }
 
     private fun app(pkg: String, label: String, hue: Long) = AppEntry(pkg, label, Intent(), null, null, Color(hue))
@@ -94,10 +96,9 @@ class HomeScreenTest {
         assertEquals(2, opened.size)
     }
 
-    @Test fun menuButtonOpensAndClosesTheWeather() {
+    @Test fun menuButtonOpensFireTvsQuickSettings() {
         press(Key.Menu); settle()
-        assertTrue(s.panel)
-        press(Key.Back); settle()
+        assertEquals(1, quick)
         assertFalse(s.panel)
     }
 

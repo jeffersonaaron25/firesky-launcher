@@ -141,6 +141,7 @@ import kotlin.math.sin
 interface Actions {
     fun open(c: Card)
     fun amazonHome()
+    fun quickSettings()
 }
 
 /** Everything is laid out in the mock's 1280x720 design units and scaled to the screen. */
@@ -206,8 +207,9 @@ private fun handleKey(s: HomeState, act: Actions, e: KeyEvent, fm: FocusManager)
         if (up && (e.key == Key.Back || e.key == Key.Menu || isOk(e))) { s.panel = false; Sfx.back() }
         return true
     }
+    // Menu does here what it does across Fire TV. The weather is the chip in the corner.
     if (e.key == Key.Menu) {
-        if (up && !s.allApps && s.wx != null) { s.panel = true; Sfx.select() }
+        if (up) act.quickSettings()
         return true
     }
     if (s.allApps && e.key == Key.Back) {

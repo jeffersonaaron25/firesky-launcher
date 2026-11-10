@@ -211,7 +211,8 @@ under Settings > Accessibility on the TV.
 Then give them the short tour:
 
 - **OK** opens, **hold OK** moves or hides a dock tile or hides a card.
-- **Menu (☰)** shows the weather.
+- **Up** to the temperature in the corner, then **OK**, shows the weather. **Menu (☰)** opens Fire TV's quick settings, as it does everywhere else.
+- The **Settings** tile opens Fire TV's full settings; **Home** comes back.
 - **Home** always comes back here, to the tile they left from; pressed again, to the first card.
 - After three minutes untouched, only the sky and the clock remain.
 - The first day or two it's still learning which apps they open when; the "Usually now" card

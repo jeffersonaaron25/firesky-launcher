@@ -42,7 +42,7 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and sends
 - **Continue watching** from Netflix, Kodi or any app that reports playback, with the time it would end.
 - **Usually now:** the app you tend to open at this hour, learned on the TV.
 - **New on your apps:** new and trending films and shows on the services you have installed, plus new episodes and seasons of what you watch. Optional; needs a free TMDB key.
-- **Weather:** now, the next 12 hours and the week, with a heads-up when rain is coming. No key needed.
+- **Weather:** now, the next 12 hours and the week, with a heads-up when rain is coming. Select the temperature in the top corner. No API key needed.
 - **Your dock, your order.** Pick the apps and their order; it never rearranges itself. Amazon's built-in extras stay out of the way.
 - **Instant Home.** The Home button and waking the TV land on FireSky, not Amazon's home screen.
 - **PlayStation tile** that shows whether the console is on and switches to its input (TVs with Fire TV built in).
@@ -55,7 +55,7 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and sends
 | ![Daytime home screen](docs/screenshots/home-day.jpg) | ![A new film on one of your apps](docs/screenshots/new-on-your-apps.jpg) |
 | The app you usually open at this hour comes first | New and trending on your services |
 | ![The weather panel](docs/screenshots/weather.jpg) | ![All apps](docs/screenshots/all-apps.jpg) |
-| Weather, from the Menu button | All apps, without the clutter |
+| Weather, from the temperature in the corner | All apps, without the clutter |
 | ![The space station crossing the sky](docs/screenshots/space-station.jpg) | ![The northern lights during a strong storm](docs/screenshots/northern-lights.jpg) |
 | The view follows the space station as it passes over | The northern lights (shown during a simulated Kp 9 storm) |
 
@@ -166,9 +166,12 @@ adb shell pm list packages -3
 |---|---|
 | **OK** | Open the selected app or title |
 | **Hold OK** | Move or hide a dock tile, or hide a card. On the Settings tile, open Amazon's home screen |
-| **Menu (☰)** | Weather |
+| **Up** to the temperature in the corner, then **OK** | Weather |
+| **Menu (☰)** | Fire TV's quick settings, as everywhere else on Fire TV |
 | **Home** | Return to FireSky, on the tile you left from. Press again for the first card |
 | **Back** | Close All apps or the weather |
+
+The Settings tile opens Fire TV's full settings. Press **Home** to come back.
 
 ## Updating and uninstalling
 

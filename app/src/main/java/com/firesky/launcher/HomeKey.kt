@@ -57,8 +57,12 @@ class HomeKey : AccessibilityService() {
     private fun watchLog() {
         log = LogTail("home-log", listOf("logcat", "-T", "1", "-v", "brief", "-b", "system", "-s", "ActivityManager:I", "PowerManagerService:I")) { l ->
             // Straight from this thread: a moment spent queueing can be what lets Amazon's home in.
-            if ("START u0" in l && "category.HOME" in l && AMAZON in l) go("home button")
-            else if ("Waking up from sleep" in l) wake()
+            if ("START u0" in l && "category.HOME" in l && AMAZON in l) {
+                // The Home button is the system's own start (uid 1000). Anything else is Amazon's home
+                // opened on purpose, such as its Settings, which is a page of its home screen.
+                if (" from uid 1000" in l) visiting = false else if (visiting) return@LogTail
+                go("home button")
+            } else if ("Waking up from sleep" in l) wake()
         }
     }
 
@@ -129,13 +133,12 @@ class HomeKey : AccessibilityService() {
         if (e.packageName?.toString() != AMAZON || e.className?.toString() != AMAZON_HOME) return
         // Amazon's home often reports itself late, after the home screen is already back. Acting on
         // that would cover the real home screen with nothing to lift it.
-        if (!front) go("amazon home")
+        if (!front && !visiting) go("amazon home")
     }
 
     /** Called from the log thread as well as the main one. */
     private fun go(why: String) {
         val now = SystemClock.uptimeMillis()
-        if (now < amazonUntil) return
         // Fire OS shuffles apps while the TV sleeps. Waking is handled by wake().
         if (getSystemService(PowerManager::class.java)?.isInteractive != true) return
         synchronized(this) {
@@ -229,8 +232,11 @@ class HomeKey : AccessibilityService() {
         private const val AMAZON_HOME = "com.amazon.tv.launcher.ui.HomeActivity_vNext"
         private var me: HomeKey? = null
 
-        /** Until this time Amazon's home is allowed to stay, because you asked for it. */
-        @Volatile private var amazonUntil = 0L
+        /**
+         * You've gone to one of Amazon's own screens on purpose (its Settings, or its home), so it can
+         * stay until you press Home or come back here some other way.
+         */
+        @Volatile var visiting = false
 
         /** Whether the home screen is what's on the TV right now. */
         @Volatile var front = false
@@ -286,11 +292,18 @@ class HomeKey : AccessibilityService() {
         /** Those presses, handed over once, for the home screen to act on now that it's there. */
         fun takeTyped(): List<Pair<Int, Int>> = me?.let { s -> s.typing = false; s.typed.take() } ?: emptyList()
 
-        fun openAmazonHome(c: Context): Boolean {
-            amazonUntil = SystemClock.uptimeMillis() + 3000
-            return runCatching {
-                c.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).setPackage(AMAZON).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            }.isSuccess
+        fun openAmazonHome(c: Context) =
+            visit(c, Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).setPackage(AMAZON))
+
+        /** Fire TV's full settings, a page of Amazon's home screen, reached through its own shortcut. */
+        fun openSettings(c: Context) =
+            visit(c, Intent().setClassName(AMAZON, "$AMAZON.ui.SettingsActivity"), Intent(android.provider.Settings.ACTION_SETTINGS))
+
+        private fun visit(c: Context, vararg tries: Intent): Boolean {
+            visiting = true
+            val ok = tries.any { i -> runCatching { c.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess }
+            if (!ok) visiting = false
+            return ok
         }
     }
 }

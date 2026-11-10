@@ -8,7 +8,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.provider.Settings
 import android.view.Choreographer
 import android.view.KeyEvent
 import android.view.PixelCopy
@@ -155,6 +154,7 @@ class MainActivity : ComponentActivity(), Actions {
     override fun onResume() {
         super.onResume()
         HomeKey.front = true
+        HomeKey.visiting = false
         HomeKey.mark("resumed")
         // Brought back by the TV waking up: the rise plays, from the first card.
         val woke = Wake.take()
@@ -459,7 +459,7 @@ class MainActivity : ComponentActivity(), Actions {
             Kind.RESUME -> leave(c) { view(s.linkFor(c), c.pkg) || launch(c.pkg) }
             Kind.APP, Kind.USUAL -> leave(c) { launch(c.pkg) }
             Kind.PS5 -> leave(c) { Input.switchTo(this, c.port) }
-            Kind.SETTINGS -> openSettings()
+            Kind.SETTINGS -> if (!HomeKey.openSettings(this)) s.toast = "Couldn't open settings"
             Kind.ALL -> s.allApps = true
             Kind.WEATHER -> s.panel = true
         }
@@ -469,16 +469,10 @@ class MainActivity : ComponentActivity(), Actions {
         if (!HomeKey.openAmazonHome(this)) s.toast = "Couldn't open Amazon home"
     }
 
-    /** Fire TV's settings panel opens over the home screen; the full menu lives in Amazon's launcher. */
-    private fun openSettings() {
-        val tries = listOf(
-            Intent().setClassName("com.amazon.tv.settings.v2", "com.amazon.tv.settings.v2.hud.HudActivity"),
-            Intent(Settings.ACTION_SETTINGS),
-        )
-        for (i in tries) {
-            if (runCatching { startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess) return
-        }
-        s.toast = "Couldn't open settings"
+    /** The Menu button's panel everywhere else on Fire TV: picture, sound, inputs and the rest, over this screen. */
+    override fun quickSettings() {
+        val hud = Intent().setClassName("com.amazon.tv.settings.v2", "com.amazon.tv.settings.v2.hud.HudActivity")
+        if (runCatching { startActivity(hud.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isFailure) s.toast = "Couldn't open quick settings"
     }
 
     private companion object {
