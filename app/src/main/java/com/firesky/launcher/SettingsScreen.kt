@@ -89,6 +89,12 @@ fun settingRows(s: HomeState, act: Actions): List<SettingRow> {
             "Keep a PlayStation tile in the dock, or show one only when the TV sees it.", Prefs.PS5, listOf("0", "1", "2", "3", "4"),
         ),
         SettingRow(
+            "While you watch",
+            when (Prefs.chosen(Prefs.WATCH)) { "hold" -> "Only when ≡ is held"; "off" -> "Off"; else -> "Glance, clock and notes" },
+            "Hold ≡ in any app for the time, the weather and your apps. A clock shows when you pause, and a note when the space station passes over or rain is near.",
+            Prefs.WATCH, listOf("", "hold", "off"),
+        ),
+        SettingRow(
             "New and Trending", if (Tmdb.on) "On" else "Off",
             "What's new on your apps, from TMDB. Add a free key from your phone.", run = { act.phone(true) },
         ),

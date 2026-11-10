@@ -416,7 +416,7 @@ private fun Screen(s: HomeState, act: Actions) {
     }
 
     // Rain that's on its way shows as cloud first, drifting in from the side the weather is coming from.
-    LaunchedEffect(s.wx, s.live) { s.wx?.let { s.live?.weather(if (it.kind == Sky.CLEAR && it.rainSoon) Sky.CLOUDY else it.kind, it.sun, it.cloud, it.windFrom, it.storm) } }
+    LaunchedEffect(s.wx, s.live) { s.wx?.let { s.live?.weather(if (it.kind == Sky.CLEAR && it.rainSoon) Sky.CLOUDY else it.kind, it.sun, it.cloud, it.windFrom, it.storm, it.windKmh) } }
     LaunchedEffect(s.idle, s.live) { s.live?.idle(s.idle) }
 
     val rise = remember { Animatable(1f) }

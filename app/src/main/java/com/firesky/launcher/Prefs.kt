@@ -47,6 +47,13 @@ object Prefs {
     const val REGION = "region"
     const val PS5 = "ps5.port"
     const val TMDB = "tmdb.key"
+    /** What FireSky does over other apps: "" for everything, "hold" for only the glance when ≡ is held, "off". */
+    const val WATCH = "watch"
+
+    /** Holding ≡ over another app brings up the glance. */
+    val glance get() = chosen(WATCH) != "off"
+    /** A clock when you pause, and a word when the space station passes over or rain is near. */
+    val nudges get() = chosen(WATCH).isEmpty()
 
     /** What Auto means here, from the TV's country. */
     val autoFahrenheit get() = country in setOf("US", "LR", "MM")

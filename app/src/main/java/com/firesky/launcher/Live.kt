@@ -157,6 +157,7 @@ class Painter {
     private var nStars = 0; private var nMilky = 0; private var nLines = 0
     private val sl = HashMap<String, Int>(); private val dl = HashMap<String, Int>()
     private val dotBuf = ByteBuffer.allocateDirect(Heavens.MAX_DOTS * 8 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+    private val sparkBuf = ByteBuffer.allocateDirect(Fireworks.MAX * 8 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
     private val curtBuf = ByteBuffer.allocateDirect(Heavens.MAX_CURTAIN * Heavens.CURTAIN_STRIDE * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
     /** The real sky to put behind the next scene; null keeps the painted one. */
     var heaven: Heavens.Frame? = null
@@ -167,6 +168,10 @@ class Painter {
     var storm = false
     /** How bright the lightning is in the next moving frame, where it struck, its shape, and whether the bolt shows. */
     var flash = 0f; var boltX = 640f; var boltShape = 0f; var bolt = false
+    /** How hard the wind blows, from [Wind.factor]: 1 is a light breeze. */
+    var speed = 1f
+    /** A balloon as x, y, radius and how much it shows. */
+    val balloon = FloatArray(4)
 
     private fun shader(type: Int, src: String): Int {
         val s = GLES30.glCreateShader(type)
@@ -247,6 +252,7 @@ class Painter {
         for (n in listOf(
             "uTop", "uBot", "uSky", "uLay", "uHaze", "uCore", "uGlow", "uCloudC", "uSunP", "uHz", "uWater", "uStarA",
             "uAuroraA", "uMoon", "uSunA", "uSunR", "uAa", "uT", "uDim", "uLate", "uKind", "uPan", "uLift", "uDrift", "uFlash", "uBolt",
+            "uSlant", "uBalloon",
         )) loc[n] = GLES30.glGetUniformLocation(prog, n)
         if (cat != null) sky(cat)
         GLES30.glEnableVertexAttribArray(0)
@@ -372,7 +378,10 @@ class Painter {
         GLES30.glUniform1f(loc.getValue("uSunA"), if (hv != null && !hv.sunIn) 0f else v[Sky.SUN_A])
         GLES30.glUniform1f(loc.getValue("uPan"), hv?.pan ?: 0f)
         GLES30.glUniform1f(loc.getValue("uLift"), hv?.lift ?: 0f)
-        GLES30.glUniform1f(loc.getValue("uDrift"), drift.step(SystemClock.uptimeMillis(), wind))
+        GLES30.glUniform1f(loc.getValue("uDrift"), drift.step(SystemClock.uptimeMillis(), wind * speed))
+        GLES30.glUniform1f(loc.getValue("uSlant"), Wind.slant(wind, speed))
+        // The balloon only drifts across the moving picture: caught in a still, it would hang there.
+        GLES30.glUniform4f(loc.getValue("uBalloon"), balloon[0], balloon[1], balloon[2], if (falling) balloon[3] else 0f)
         GLES30.glUniform1f(loc.getValue("uSunR"), v[Sky.SUN_R])
         GLES30.glUniform1f(loc.getValue("uAa"), 1280f / tw)
         GLES30.glUniform1f(loc.getValue("uT"), t)
@@ -405,6 +414,29 @@ class Painter {
 
     /** Puts a still on the screen, or a fade between the two. */
     fun show(from: Int, to: Int, mix: Float) = present(6 + from, 6 + to, mix)
+
+    /** The idle picture again, as last drawn, for a frame in which only the fireworks move. */
+    fun again() {
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        present(8, 8, 0f)
+    }
+
+    /** Fireworks straight over the picture on screen, as light added to it. */
+    fun sparks(d: FloatArray, n: Int) {
+        if (n <= 0 || dotProg == 0) return
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glViewport(0, 0, w, h)
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFuncSeparate(GLES30.GL_ONE, GLES30.GL_ONE, GLES30.GL_ZERO, GLES30.GL_ONE)
+        GLES30.glUseProgram(dotProg)
+        GLES30.glUniform1f(dl.getValue("uScale"), w / 1280f)
+        sparkBuf.position(0); sparkBuf.put(d, 0, n * 8); sparkBuf.position(0)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vbo[3])
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, n * 32, sparkBuf, GLES30.GL_DYNAMIC_DRAW)
+        GLES30.glBindVertexArray(vao[3]); GLES30.glDrawArrays(GLES30.GL_POINTS, 0, n)
+        GLES30.glBindVertexArray(0); GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glDisable(GLES30.GL_BLEND)
+    }
 
     /** The moving scene for the idle screen: a smaller picture, stretched. */
     fun moving(f: Flow, t: Float, late: Boolean) {
@@ -477,6 +509,35 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
     /** How far the real sky's camera has moved the land down the screen, in the backdrop's 720 units. */
     @Volatile var lift = 0f
         private set
+    private var windKmh = 10f
+    /** Wind asked for over ADB, in place of the forecast's. */
+    private var windTest: Float? = null
+    /** How long the idle screen has been up, and whether a balloon is out this morning. */
+    private var idleS = 0f
+    private var balloonOut = false
+    /** New Year's fireworks are due, looked at once a second; and they're being drawn over the home screen. */
+    private var fwOn = false
+    private var sparkling = false
+    private val sparkDots = FloatArray(Fireworks.MAX * 8)
+    private var sparkN = 0
+    private var fwFrom = 0L; private var fwDrawn = 0; private var fwWorkNs = 0L; private var fwWorstNs = 0L
+    private val fireworks get() = fwOn || Fireworks.busy
+
+    /** Moves the fireworks on and gathers their sparks, dimmed by cloud and by the shade the backdrop paints in. */
+    private fun stepFireworks(dt: Float) {
+        sparkN = 0
+        val clear = 1f - .75f * (Heavens.cloudTest ?: cloud) / 100f
+        Fireworks.step(dt, fwOn) { x, y, size, r, g, b, a ->
+            if (sparkN < Fireworks.MAX) {
+                val o = sparkN * 8
+                sparkDots[o] = x; sparkDots[o + 1] = y; sparkDots[o + 2] = size
+                sparkDots[o + 3] = r; sparkDots[o + 4] = g; sparkDots[o + 5] = b
+                sparkDots[o + 6] = a * clear * Fireworks.shade(x, y); sparkDots[o + 7] = 0f
+                sparkN++
+            }
+        }
+    }
+
     private var storm = false
     /** A storm asked for over ADB, to see one without waiting for the weather. */
     private var stormTest = false
@@ -533,6 +594,11 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
      */
     private val skyClock = object : Runnable {
         override fun run() {
+            if (ready) fwOn = Fireworks.on(Calendar.getInstance().apply { timeInMillis = Heavens.now() })
+            if (ready && active && !idle && fireworks && !sparkling) {
+                sparkling = true; fwFrom = SystemClock.uptimeMillis(); fwDrawn = 0; fwWorkNs = 0; fwWorstNs = 0
+                wakeLoop()
+            }
             if (ready && active && !idle && cat != null && fade < 0f && !animating) {
                 sky(1f, false)
                 val every = if (skyF.dark > 0f || skyF.dotCount > 0) 30_000L else 300_000L
@@ -545,6 +611,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
 
     /** The scene as it is now, swapped in without a fade: the stars have moved a pixel. */
     private fun quick() {
+        apply()
         flow.snap(minuteNow(), sun)
         sky(0f, true)
         painter.still(flow, 1 - cur, clock(), lateNow())
@@ -559,7 +626,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 egl(st)
                 cat = runCatching { Heavens.catalog(context) }.onFailure { Log.w(TAG, "no star catalogue", it) }.getOrNull()
                 painter.init(width, height, cat)
-                painter.storm = storm || stormTest
+                apply()
                 painter.weather(shownKind())
                 flow.snap(minuteNow(), sun)
                 sky(0f, true)
@@ -626,6 +693,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
     private fun scene(seconds: Float) {
         if (!ready) return
         if (fade >= 0f) { queued = seconds; return }
+        apply()
         flow.snap(minuteNow(), sun)
         sky(0f, true)
         painter.still(flow, 1 - cur, clock(), lateNow())
@@ -646,43 +714,67 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 flow.drift(dt)
                 odd = !odd
                 skyAcc += dt
+                idleS += dt
+                if (balloonOut) Balloon.at(idleS, painter.wind, painter.balloon) else painter.balloon[3] = 0f
                 if (painter.storm) {
                     painter.flash = lightning.step(dt)
                     painter.boltX = lightning.x; painter.boltShape = lightning.shape; painter.bolt = lightning.bolt
                 }
-                if (odd) { sky(skyAcc, true); skyAcc = 0f; painter.moving(flow, clock(), lateNow()); swap() }
+                if (fireworks) stepFireworks(dt) else sparkN = 0
+                // The land moves every other frame; fireworks, which need every frame, go over the last one in between.
+                if (odd) { sky(skyAcc, true); skyAcc = 0f; painter.moving(flow, clock(), lateNow()); painter.sparks(sparkDots, sparkN); swap() }
+                else if (sparkN > 0) { painter.again(); painter.sparks(sparkDots, sparkN); swap() }
                 choreo.postFrameCallback(tick)
             }
             fade >= 0f -> {
                 fade += dt / fadeS
                 val done = fade >= 1f
+                if (sparkling) stepFireworks(dt)
                 painter.show(cur, 1 - cur, if (done) 1f else smooth(fade))
+                if (sparkling) painter.sparks(sparkDots, sparkN)
                 swap()
                 if (done) {
                     cur = 1 - cur
                     fade = -1f
                     if (queued >= 0f) { val q = queued; queued = -1f; scene(q) }
                 }
-                if (fade >= 0f || animating) choreo.postFrameCallback(tick) else { parked = true; lastNs = 0L }
+                if (fade >= 0f || animating || sparkling) choreo.postFrameCallback(tick) else { parked = true; lastNs = 0L }
             }
-            animating -> {
+            animating || sparkling -> {
+                frameN++
+                val t0 = System.nanoTime()
+                if (sparkling) stepFireworks(dt)
                 // Meteors need smooth frames; the station moves slowly enough for one in four.
-                frameN++; skyAcc += dt
-                if (Heavens.meteors.isNotEmpty() || frameN % 4 == 0) {
-                    val t0 = System.nanoTime()
-                    flow.snap(minuteNow(), sun)
-                    sky(skyAcc, true); skyAcc = 0f
-                    painter.still(flow, cur, clock(), lateNow())
+                var drew = false
+                if (animating) {
+                    skyAcc += dt
+                    if (Heavens.meteors.isNotEmpty() || frameN % 4 == 0) {
+                        flow.snap(minuteNow(), sun)
+                        sky(skyAcc, true); skyAcc = 0f
+                        painter.still(flow, cur, clock(), lateNow())
+                        drew = true
+                    }
+                }
+                if (drew || sparkling) {
                     painter.show(cur, cur, 0f)
+                    if (sparkling) painter.sparks(sparkDots, sparkN)
                     swap()
                     val w = System.nanoTime() - t0
-                    animDrawn++; animWorkNs += w; if (w > animWorstNs) animWorstNs = w
+                    if (drew) { animDrawn++; animWorkNs += w; if (w > animWorstNs) animWorstNs = w }
+                    if (sparkling) { fwDrawn++; fwWorkNs += w; if (w > fwWorstNs) fwWorstNs = w }
                 }
-                if (skyF.moving) choreo.postFrameCallback(tick) else {
-                    animating = false; parked = true; lastNs = 0L
+                if (animating && !skyF.moving) {
+                    animating = false
                     if (animDrawn > 0) Log.i(TAG, "sky moved %.0f s: %d frames, %.1f ms each, worst %.1f".format(
                         (SystemClock.uptimeMillis() - animFrom) / 1000.0, animDrawn, animWorkNs / 1e6 / animDrawn, animWorstNs / 1e6))
                 }
+                if (sparkling && !fireworks) {
+                    sparkling = false
+                    painter.show(cur, cur, 0f); swap()
+                    if (fwDrawn > 0) Log.i(TAG, "fireworks %.0f s: %d frames, %.1f ms each, worst %.1f".format(
+                        (SystemClock.uptimeMillis() - fwFrom) / 1000.0, fwDrawn, fwWorkNs / 1e6 / fwDrawn, fwWorstNs / 1e6))
+                }
+                if (animating || sparkling) choreo.postFrameCallback(tick) else { parked = true; lastNs = 0L }
             }
             else -> {
                 if (dirty) { painter.show(cur, cur, 0f); swap(); dirty = false }
@@ -698,9 +790,16 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         if (!idle) scene(FADE_S)
     }
 
-    fun weather(kind: Int, sun: Sun, cloud: Int = 0, windFrom: Int? = null, storm: Boolean = false) = h.post {
+    fun weather(kind: Int, sun: Sun, cloud: Int = 0, windFrom: Int? = null, storm: Boolean = false, windKmh: Float = 10f) = h.post {
         this.kind = kind; this.sun = sun; this.cloud = cloud; this.windFrom = windFrom; this.storm = storm
-        if (ready) { painter.storm = storm || stormTest; painter.weather(shownKind()); if (!idle) scene(SLOW_FADE_S) }
+        this.windKmh = windKmh
+        if (ready) { apply(); painter.weather(shownKind()); if (!idle) scene(SLOW_FADE_S) }
+    }
+
+    /** What the weather means for the painter, with anything asked for over ADB in place of the real thing. */
+    private fun apply() {
+        painter.storm = storm || stormTest
+        painter.speed = Wind.factor(windTest ?: windKmh)
     }
 
     private fun shownKind() = if (stormTest) Sky.RAIN else if (Heavens.cloudTest == 0) Sky.CLEAR else kind
@@ -711,6 +810,9 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
      *   am broadcast -a com.firesky.launcher.SKY --ei cloud 0 --ez pass true  a minute before the station's next pass
      *   am broadcast -a com.firesky.launcher.SKY --ef kp 8                    a geomagnetic storm
      *   am broadcast -a com.firesky.launcher.SKY --ez storm true              a thunderstorm
+     *   am broadcast -a com.firesky.launcher.SKY --ef wind 45                 a 45 km/h wind
+     *   am broadcast -a com.firesky.launcher.SKY --ez balloon true            a balloon on the idle screen
+     *   am broadcast -a com.firesky.launcher.SKY --ez fireworks true          New Year's fireworks
      *   am broadcast -a com.firesky.launcher.SKY                              back to the real sky
      */
     private val test = object : BroadcastReceiver() {
@@ -722,7 +824,10 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
             Heavens.ahead = if (i.getBooleanExtra("pass", false) && next != null) next.start - 60_000 - now else i.getLongExtra("ahead", 0) * 60_000
             Log.i(TAG, "sky test: cloud ${Heavens.cloudTest} kp ${Heavens.kpTest} ahead ${Heavens.ahead / 60_000} min, next pass ${next?.let { java.util.Date(it.start) }}")
             stormTest = i.getBooleanExtra("storm", false)
-            if (ready) { painter.storm = storm || stormTest; painter.weather(shownKind()); animating = false; if (!idle) scene(SLOW_FADE_S) }
+            windTest = i.getFloatExtra("wind", -1f).takeIf { it >= 0 }
+            Balloon.test = i.getBooleanExtra("balloon", false)
+            Fireworks.test = i.getBooleanExtra("fireworks", false)
+            if (ready) { apply(); painter.weather(shownKind()); animating = false; if (!idle) scene(SLOW_FADE_S) }
         }
     }
 
@@ -736,9 +841,12 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         if (!ready || on == idle) return@post
         idle = on
         if (on) {
+            idleS = 0f
+            balloonOut = Balloon.morning(Calendar.getInstance(), minuteNow(), sun, shownKind(), cloud, windTest ?: windKmh)
             flow.startDrift()
             wakeLoop()
         } else {
+            painter.balloon[3] = 0f
             // Leave from the frame on screen, so nothing jumps.
             painter.still(flow, cur, clock(), lateNow())
             flow.stopDrift()
@@ -764,7 +872,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         scene(DAWN_FADE_S)
     }
 
-    fun pause() = h.post { active = false; animating = false }
+    fun pause() = h.post { active = false; animating = false; sparkling = false }
 
     fun resume() {
         waiting = true

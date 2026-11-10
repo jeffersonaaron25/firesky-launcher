@@ -42,6 +42,16 @@ class HomeKey : AccessibilityService() {
     private var log: LogTail? = null
     private var watching: LogTail? = null
 
+    /** The glance over other apps, and the ≡ press that brings it up. */
+    private var glance: Glance? = null
+    private val hold = MenuHold()
+    private var wasPlaying = false
+    private var lastNudge = 0L
+    private var lastPass = 0L
+    private var lastRain = 0L
+    @Volatile private var fetching = false
+    private var fetchedAt = 0L
+
     /** The cover is a picture of the home screen, put up for a Home press, so a press now is meant for what it shows. */
     private var typing = false
     private val typed = TypeAhead()
@@ -76,6 +86,7 @@ class HomeKey : AccessibilityService() {
         note("waking up")
         Wake.ask()
         main.post {
+            glance?.hide()
             cover(dark = true)
             main.removeCallbacks(giveUp)
             main.postDelayed(giveUp, 7000)
@@ -93,6 +104,10 @@ class HomeKey : AccessibilityService() {
     override fun onServiceConnected() {
         me = this
         Prefs.init(this)
+        glance = Glance(this)
+        Playing.changed = { playing(it) }
+        main.removeCallbacks(ticker)
+        main.postDelayed(ticker, 60_000)
         diary = getExternalFilesDir(null)?.let { File(it, "home.log") }
         task = findTask()
         // Both are slow the first time, and a Home press has no time to spare for that.
@@ -113,6 +128,10 @@ class HomeKey : AccessibilityService() {
         log?.stop()
         watching?.stop()
         lift()
+        Playing.changed = null
+        main.removeCallbacks(ticker)
+        main.removeCallbacks(pauseStrip)
+        glance?.end()
         return super.onUnbind(intent)
     }
 
@@ -122,6 +141,16 @@ class HomeKey : AccessibilityService() {
             if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) go("home key")
             return true
         }
+        // Over another app, holding ≡ brings up the glance. While it's up, the remote is the glance's.
+        if (e.keyCode == KeyEvent.KEYCODE_MENU) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) main.postDelayed(held, MenuHold.HOLD_MS) else if (e.action == KeyEvent.ACTION_UP) main.removeCallbacks(held)
+            when (hold.on(e.action, e.repeatCount, overApp() && Prefs.glance)) {
+                MenuHold.Act.OPEN -> { openGlance(); return true }
+                MenuHold.Act.EAT -> return true
+                MenuHold.Act.PASS -> {}
+            }
+        }
+        if (glance?.full == true) return glance?.key(e) == true
         // Fire TV's Settings is a page of Amazon's home screen, so Back there would open the rest of
         // it. Having come from here, Back comes back here. Its own screens (Network and so on) are
         // separate windows, and Back in them returns to Settings as usual.
@@ -164,6 +193,7 @@ class HomeKey : AccessibilityService() {
         pressed = now
         note("going home: $why")
         main.post {
+            glance?.hide()
             cover()
             main.removeCallbacks(giveUp)
             main.postDelayed(giveUp, 7000)
@@ -238,6 +268,65 @@ class HomeKey : AccessibilityService() {
 
     override fun onInterrupt() {}
 
+    private fun interactive() = getSystemService(PowerManager::class.java)?.isInteractive == true
+
+    /** Another app is what's on the TV: not FireSky, not Amazon's own screens, not covered, and the screen is on. */
+    private fun overApp() = !front && mask == null && !amazonOnTop && interactive()
+
+    private val held = Runnable { if (hold.timeUp() && overApp()) openGlance() }
+
+    private fun openGlance() {
+        note("glance over ${Playing.now?.pkg ?: "an app"}")
+        glance?.full()
+    }
+
+    /** Pausing shows the time and when it would end, once the pause has lasted a moment. */
+    private fun playing(n: Playing.Now?) {
+        val was = wasPlaying
+        wasPlaying = n?.playing == true
+        // Players report a pause more than once, and only the first one starts the wait.
+        if (n != null && !n.playing) { if (was) { main.removeCallbacks(pauseStrip); main.postDelayed(pauseStrip, PAUSE_WAIT_MS) } }
+        else { main.removeCallbacks(pauseStrip); glance?.unpause() }
+    }
+
+    private val pauseStrip = Runnable {
+        val n = Playing.now ?: return@Runnable
+        if (n.playing || !overApp() || !Prefs.nudges) return@Runnable
+        glance?.strip(Playing.ends(Playing.known(this, n)), StripWhy.PAUSE, Glance.PAUSE_MS)
+    }
+
+    /**
+     * Once a minute: keeps the forecast and the station's passes fresh while FireSky isn't open to
+     * do it, and says if the station is about to pass or rain is about to start.
+     */
+    private val ticker = object : Runnable {
+        override fun run() {
+            runCatching { tick() }.onFailure { Log.w(TAG, "tick", it) }
+            main.postDelayed(this, 60_000)
+        }
+    }
+
+    private fun tick() {
+        if (!interactive()) return
+        val now = System.currentTimeMillis()
+        if (!front && !fetching && now - fetchedAt > 10 * 60_000 && Weather.stale(this)) {
+            fetching = true; fetchedAt = now
+            thread(name = "fresh", isDaemon = true) {
+                runCatching { Weather.fetch(this); Heavens.refresh(this) }
+                fetching = false
+            }
+        }
+        val g = glance ?: return
+        if (!Prefs.nudges || !overApp() || g.showing || now - lastNudge < Nudges.GAP_MS) return
+        val wx = Weather.cached(this)
+        val n = Nudges.station(Heavens.passes, now, wx?.cloud ?: 0, lastPass) ?: Nudges.rain(wx, now, lastRain) ?: return
+        lastNudge = now
+        if (n.pass != 0L) lastPass = n.pass
+        if (n.rain) lastRain = now
+        note("nudge: ${n.text}")
+        g.strip(n.text, StripWhy.NUDGE, Glance.NUDGE_MS)
+    }
+
     companion object {
         private const val TAG = "FireSkyHome"
         private const val AMAZON = "com.amazon.tv.launcher"
@@ -257,8 +346,12 @@ class HomeKey : AccessibilityService() {
         /** Amazon's home screen, which Settings is a page of, is the window in front. */
         @Volatile private var amazonOnTop = false
 
-        /** Whether the home screen is what's on the TV right now. */
+        /** Whether the home screen is what's on the TV right now. Coming home takes the glance down. */
         @Volatile var front = false
+            set(v) { field = v; if (v) me?.let { s -> s.main.post { s.glance?.hide() } } }
+
+        /** A pause has lasted this long before the time is shown over it. */
+        private const val PAUSE_WAIT_MS = 1200L
 
         /** The screen is covered, so whatever happens underneath won't be seen. */
         val covering get() = me?.mask != null

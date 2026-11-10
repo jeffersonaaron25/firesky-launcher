@@ -225,6 +225,8 @@ uniform float uLift;
 uniform float uDrift;
 uniform float uFlash;
 uniform vec3 uBolt;
+uniform float uSlant;
+uniform vec4 uBalloon;
 
 const float W = 1280.0;
 const float H = 720.0;
@@ -240,6 +242,26 @@ vec3 orb(vec3 c, vec2 p, vec2 o, float r, vec3 core, vec3 glow, float a) {
     return mix(c, core, a * (1.0 - smoothstep(r - uAa, r + uAa, d)));
 }
 
+/** A hot-air balloon, far off: striped, lit from the sun's side, with its basket hanging below. */
+vec3 balloon(vec3 c, vec2 p) {
+    vec2 q = (p - uBalloon.xy) / uBalloon.z;
+    if (abs(q.x) > 1.3 || q.y < -1.3 || q.y > 2.0) return c;
+    float aa = 1.2 / uBalloon.z;
+    // Round above, narrowing to its mouth below.
+    float w = q.y <= 0.0 ? sqrt(max(0.0, 1.0 - q.y * q.y)) : max(sqrt(max(0.0, 1.0 - q.y * q.y)), mix(1.0, 0.28, clamp(q.y / 1.3, 0.0, 1.0)));
+    float body = (q.y < -1.0 || q.y > 1.3) ? 0.0 : smoothstep(-aa, aa, w - abs(q.x));
+    float u = clamp(q.x / max(w, 0.05), -1.0, 1.0);
+    float gore = mod(floor((asin(u) + 1.5708) / 0.449), 2.0);
+    vec3 col = mix(vec3(0.84, 0.26, 0.2), vec3(0.97, 0.9, 0.76), gore);
+    col = mix(col, vec3(0.98, 0.78, 0.3), smoothstep(0.08, 0.0, abs(q.y - 0.15)) * 0.8);
+    float side = uSunP.x * W > uBalloon.x ? u : -u;
+    col *= 0.5 + 0.5 * clamp(0.55 + 0.45 * side, 0.0, 1.0);
+    float basket = smoothstep(aa, -aa, max(abs(q.x) - 0.13, abs(q.y - 1.6) - 0.1));
+    col = mix(col, uSky[1] * 0.5, 0.12);
+    c = mix(c, col, body * uBalloon.w);
+    return mix(c, vec3(0.26, 0.18, 0.12), basket * uBalloon.w);
+}
+
 vec3 sky(vec2 p, float hz) {
     float t = clamp(p.y / hz, 0.0, 1.0);
     vec3 c = t < 0.55 ? mix(uSky[0], uSky[1], t / 0.55) : mix(uSky[1], uSky[2], (t - 0.55) / 0.45);
@@ -251,6 +273,7 @@ vec3 sky(vec2 p, float hz) {
     if (uAuroraA > 0.01) c += texture(uAurora, uv).rgb * uAuroraA;
     if (uSunA > 0.01) c = orb(c, p, uSunP * vec2(W, H), uSunR, uCore, uGlow, uSunA);
     if (uMoon > 0.01) c = orb(c, p, vec2(0.8 * W, 0.18 * H), 16.0, vec3(0.933, 0.949, 1.0), vec3(0.784, 0.843, 1.0), uMoon);
+    if (uBalloon.w > 0.003) c = balloon(c, p);
     if (uBolt.z > 0.003) {
         // A bolt of lightning, in the sky and so behind the mountains: a thin line from the cloud down,
         // wandering further the lower it gets. Its kinks are borrowed from the ridges, which are jagged already.
@@ -305,7 +328,7 @@ vec3 weather(vec3 c, vec2 p) {
     // Rain and snow fall by the clock, which starts again every hour: each of their speeds fits a
     // whole number of times into that hour, so nothing jumps when it does.
     if (uKind == 2) {
-        float s = p.x + p.y * 0.21;
+        float s = p.x + p.y * uSlant;
         float a = texture(uFx, vec2(s / 512.0, p.y / 512.0 - uT * 1.7)).a;
         float b = texture(uFx, vec2(s / 340.0 + 0.31, p.y / 340.0 - uT * 2.1)).a;
         c = mix(c, vec3(0.804, 0.871, 0.961), clamp(a + b * 0.7, 0.0, 1.0) * 0.38);

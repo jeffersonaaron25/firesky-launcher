@@ -30,6 +30,9 @@ object Weather {
         val kind get() = Sky.kindOf(code)
         val condition get() = cond(code)
 
+        /** The wind in km/h, whichever units it was asked for in. */
+        val windKmh get() = if (Prefs.mph) wind * 1.609f else wind.toFloat()
+
         /** Thunder with it, which the backdrop shows as a darker sky and, left alone, lightning. */
         val storm get() = code in 95..99
 
