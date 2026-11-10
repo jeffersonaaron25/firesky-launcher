@@ -49,7 +49,8 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and sends
 - **Your dock, your order.** Pick the apps and their order; it never rearranges itself. Amazon's built-in extras stay out of the way.
 - **Instant Home.** The Home button and waking the TV land on FireSky, not Amazon's home screen.
 - **PlayStation tile** that shows whether the console is on and switches to its input (TVs with Fire TV built in).
-- **Idle mode:** after three minutes untouched, only the sky and the clock remain, with lightning in a thunderstorm.
+- **While you watch:** hold **≡** in any app for the time, the weather and your apps. A clock shows when you pause, and a quiet note when the space station is about to pass over or rain is near.
+- **Idle mode:** after three minutes untouched, only the sky and the clock remain, with lightning in a thunderstorm, a hot-air balloon on some calm mornings, and fireworks at New Year.
 
 ## Screenshots
 
@@ -104,7 +105,13 @@ FireSky isn't on the Appstore. It's installed from a computer on the same networ
 
 ### With the Downloader app
 
-You can also put FireSky on the TV with the [Downloader](https://www.aftvnews.com/downloader/) app, using this address:
+You can also put FireSky on the TV with the [Downloader](https://www.aftvnews.com/downloader/) app (install it from the Amazon Appstore). Type this code into its address box:
+
+```text
+8066275
+```
+
+The code always gives you the latest release. It's short for this address, which works too:
 
 ```text
 https://github.com/jeffersonaaron25/firesky-launcher/releases/latest/download/FireSky.apk
@@ -131,8 +138,10 @@ FireSky's settings are on the TV: hold **OK** on the **Settings** tile (or press
 | Temperature, Wind, Clock | °C or °F, mph or km/h, 12 or 24-hour. Auto follows the TV |
 | Streaming country | Where your subscriptions are, for New and Trending. Auto follows the TV |
 | PlayStation tile | Always in the dock on a given HDMI port, or only when a PlayStation is on |
+| While you watch | The glance when you hold **≡** in another app, the pause clock and the notes. Can be just the glance, or off |
 | New and Trending | Scan the QR code with your phone and paste a free TMDB key there. No typing on the remote |
 | Home button | Whether Home opens FireSky, and how to set it up if not |
+| Hidden apps | Brings back apps hidden from All apps |
 | Version | Installs a downloaded update, or looks for one |
 
 To arrange the dock, hold **OK** on a tile to move or hide it.
@@ -154,13 +163,14 @@ The page your phone opens from the QR code walks through this too.
 | **Play/Pause** | On a film or show card, its title page. Anywhere else, carry on with what you were last watching |
 | **Up** to the temperature in the corner, then **OK** | Weather |
 | **Home** | Return to FireSky, on the tile you left from. Press again for the first card |
+| **Hold ≡** in another app | The time, the weather and your apps over what's playing |
 | **Back** | Close All apps, the weather, a title page or the settings |
 
 The Settings tile opens Fire TV's own settings. Press **Back** or **Home** to come back.
 
 ## Updates
 
-FireSky checks this repository for a new release a few times a day and downloads it in the background. An **Update** card appears at the front of the row: select it and confirm, and FireSky restarts as the new version.
+FireSky checks this repository for a new release a few times a day and downloads it in the background. An **Update** card appears at the front of the row and lists what the update brings while it's selected. Press **OK** and confirm, and FireSky opens again as the new version.
 
 To check now: **FireSky settings > Version**.
 
@@ -190,7 +200,7 @@ Set `tv=` and, if Android Studio hasn't added it, `sdk.dir=` in `local.propertie
 ./install.sh
 ```
 
-`local.properties` can also hold defaults for your own builds: a TMDB key, dock and hidden apps, units and so on (see `local.properties.example`). Builds of your own don't update themselves; releases are built and signed by the release workflow when a version tag is pushed.
+`local.properties` can also hold defaults for your own builds: a TMDB key, dock and hidden apps, units and so on (see `local.properties.example`). Builds of your own don't update themselves; releases are built and signed by the release workflow when a version tag is pushed. Releases go up the middle number (`v1.2.0`, `v1.3.0`); the last number is for test builds between releases, built with `-Pfiresky.version=1.2.1` and so on. A release needs its points in [`CHANGELOG.md`](CHANGELOG.md): the TV shows the first three on the update card.
 
 ## Privacy
 
@@ -213,9 +223,9 @@ The setup grants these permissions over ADB. None of the data leaves the TV.
 |---|---|
 | Read system logs | Catch the Home button the moment it's pressed, and read Netflix's Continue Watching list |
 | Usage stats | Which apps you open, and when |
-| Notification listener | What's paused, for the Continue card |
+| Notification listener | What's paused, for the Continue card and the pause clock |
 | Storage | Kodi's watch history |
-| Accessibility service | Home button handling |
+| Accessibility service | Home button handling, and the glance over other apps |
 | Install apps | Installing FireSky's own updates, after you confirm on screen |
 
 ## How it works

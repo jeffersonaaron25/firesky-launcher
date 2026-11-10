@@ -644,11 +644,28 @@ private fun Hero(hero: State<Card?>) {
         label = "hero",
     ) { card ->
         if (card != null) {
-            Column {
+            // Points take more room than a meta line, so that card sits a little higher, clear of the row.
+            Column(if (card.notes.isNotEmpty()) Modifier.offset(y = -z.d(30)) else Modifier) {
                 Box(Modifier.height(z.d(20))) { if (card.label.isNotEmpty()) T(card.label.uppercase(), 14f, 600, .7f, .16f) }
                 Box(Modifier.height(z.d(116)).widthIn(max = z.d(1130)), contentAlignment = Alignment.CenterStart) { T(card.title, 74f, 600, spacing = -.025f) }
                 if (card.meta.isNotEmpty()) T(card.meta, 26f, 400, .82f)
                 if (card.sub.isNotEmpty()) Box(Modifier.padding(top = z.d(6))) { T(card.sub, 20f, 400, .6f) }
+                if (card.notes.isNotEmpty()) Points(card.notes)
+            }
+        }
+    }
+}
+
+/** A few short points under the hero's title, each after a small dot. They stop short of the row below. */
+@Composable
+private fun Points(notes: List<String>) {
+    val z = LocalDz.current
+    Column(Modifier.widthIn(max = z.d(980)), verticalArrangement = Arrangement.spacedBy(z.d(6))) {
+        notes.forEach {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(z.d(6)).background(Color.White.copy(alpha = .7f), CircleShape))
+                Spacer(Modifier.width(z.d(14)))
+                T(it, 22f, 400, .86f)
             }
         }
     }

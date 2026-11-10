@@ -28,7 +28,38 @@ object Updater {
     private const val EVERY_MS = 6 * 3600_000L
     private const val RESULT = "com.firesky.launcher.INSTALL_RESULT"
 
-    class Ready(val version: String, val file: File)
+    /** A downloaded release, and the first few points of what it brings, from its release notes. */
+    class Ready(val version: String, val file: File, val notes: List<String> = emptyList())
+
+    /** How many points the update card shows. */
+    const val NOTES = 3
+
+    /**
+     * The first list in a release's notes, as plain lines: what the update brings. Links keep their
+     * words, emphasis and code marks go, and a point wrapped over several lines is joined back up.
+     */
+    fun notes(body: String, most: Int = NOTES): List<String> {
+        val out = mutableListOf<String>()
+        var started = false
+        for (raw in body.lines()) {
+            val line = raw.trimEnd()
+            val bullet = Regex("^ {0,1}[-*+] +(.+)").find(line)?.groupValues?.get(1)
+            when {
+                bullet != null -> { if (out.size == most) break; out += bullet; started = true }
+                // The rest of a point that wraps onto the next line.
+                started && line.startsWith("  ") && line.isNotBlank() -> out[out.lastIndex] += " " + line.trim()
+                line.isBlank() -> continue
+                started -> break
+            }
+        }
+        return out.map(::plain).filter { it.isNotEmpty() }
+    }
+
+    private fun plain(md: String) = md
+        .replace(Regex("\\[([^\\]]+)]\\([^)]*\\)"), "$1")
+        .replace(Regex("(\\*\\*|__|`)"), "")
+        .replace(Regex("(?<![\\w*])[*_]([^*_]+)[*_](?![\\w*])"), "$1")
+        .trim()
 
     /**
      * Android leaves you on Amazon's home once it has replaced the app. When the update was one you
@@ -81,6 +112,7 @@ object Updater {
             get(url).use { input -> part.outputStream().use { input.copyTo(it) } }
             val file = File(dir, "FireSky-$version.apk")
             part.renameTo(file)
+            File(dir, "FireSky-$version.txt").writeText(notes(json.optString("body")).joinToString("\n"))
             Log.i(TAG, "downloaded $version")
             ready(c, dir)
         }.onFailure { Log.w(TAG, "check: $it") }.getOrNull()
@@ -90,9 +122,10 @@ object Updater {
     private fun ready(c: Context, dir: File): Ready? {
         val f = dir.listFiles()?.firstOrNull { it.name.startsWith("FireSky-") && it.name.endsWith(".apk") } ?: return null
         val version = f.name.removePrefix("FireSky-").removeSuffix(".apk")
+        val text = File(dir, "FireSky-$version.txt")
         val ok = newer(version, BuildConfig.VERSION_NAME) && sameKey(c, f)
-        if (!ok) { f.delete(); return null }
-        return Ready(version, f)
+        if (!ok) { f.delete(); text.delete(); return null }
+        return Ready(version, f, runCatching { text.readLines().filter { it.isNotBlank() } }.getOrDefault(emptyList()))
     }
 
     @Suppress("DEPRECATION")

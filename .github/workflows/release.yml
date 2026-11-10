@@ -21,6 +21,24 @@ jobs:
           java-version: "17"
           cache: gradle
 
+      # The notes are this version's section of CHANGELOG.md. TVs show its first points on the update
+      # card, so a release without them stops here.
+      - name: Release notes
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          # The last number is for test builds on a TV between releases, so a release always ends in .0.
+          if [[ ! "$v" =~ ^[0-9]+\.[0-9]+\.0$ ]]; then
+            echo "::error::Releases go up the middle number and end in .0 (like v1.3.0), not $GITHUB_REF_NAME."
+            exit 1
+          fi
+          awk -v v="$v" '/^## /{ p = ($2 == v || $2 == "[" v "]") ; next } p' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -qE '^[-*] ' "$RUNNER_TEMP/notes.md"; then
+            echo "::error::CHANGELOG.md has no points under '## $v'. Add them, then push the tag again."
+            exit 1
+          fi
+          printf '\nTo install, see [Install](https://github.com/%s#install), or type the code 8066275 into the Downloader app. FireSky already on a TV offers this update by itself.\n' "$GITHUB_REPOSITORY" >> "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
       - name: Unit tests
         run: ./gradlew testDebugUnitTest --console=plain
 
@@ -49,5 +67,5 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" FireSky.apk \
             --title "FireSky ${GITHUB_REF_NAME#v}" \
-            --notes "To install, see [Install](https://github.com/${GITHUB_REPOSITORY}#install). FireSky already on a TV offers this update by itself." \
+            --notes-file "$RUNNER_TEMP/notes.md" \
             --generate-notes

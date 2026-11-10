@@ -40,6 +40,8 @@ data class Card(
     val link: String? = null,
     /** A second, quieter line under the meta: what's left of the season, what's coming. */
     val sub: String = "",
+    /** Short points shown under the title in place of the meta: what an update brings. */
+    val notes: List<String> = emptyList(),
 )
 
 enum class MenuAct(val label: String) {
@@ -181,7 +183,11 @@ class HomeState {
         val out = mutableListOf<Card>()
         // Until Home opens FireSky, the first thing here says how.
         if (!homeReady) out += Card("t-setup", Kind.SETUP, null, "Finish setting up", "Finish setup", "Make the Home button open FireSky", SKY)
-        update?.let { out += Card("t-update", Kind.UPDATE, null, "Update", "FireSky ${it.version}", "Ready to install · OK to update", SKY) }
+        // What it brings shows while the card is selected; a release without notes just says it's ready.
+        update?.let {
+            out += if (it.notes.isEmpty()) Card("t-update", Kind.UPDATE, null, "Update", "FireSky ${it.version}", "Ready to install · OK to update", SKY)
+            else Card("t-update", Kind.UPDATE, null, "Update · OK to install", "FireSky ${it.version}", "", SKY, notes = it.notes)
+        }
         ps5?.takeIf { it.on }?.let {
             out += Card("t-ps5", Kind.PS5, null, "HDMI ${it.port}", it.name, "On", PS5_HUE, on = true, port = it.port)
         }

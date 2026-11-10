@@ -335,6 +335,32 @@ class HomeScreenTest {
         assertTrue(s.tonight().none { it.kind == Kind.SETUP })
     }
 
+    @Test fun theUpdateCardSaysWhatItBringsWhileSelected() {
+        s.homeReady = true
+        s.update = Updater.Ready("1.2.0", java.io.File("FireSky-1.2.0.apk"), listOf("See what an update brings", "Quicker Home"))
+        settle()
+        val update = s.tonight().first()
+        assertEquals(Kind.UPDATE, update.kind)
+        repeat(3) { if (s.focusAt != update.key) press(Key.DirectionLeft) }
+        assertEquals(update.key, s.focusAt)
+        settle()
+        rule.onAllNodesWithText("UPDATE · OK TO INSTALL").assertCountEquals(1)
+        rule.onAllNodesWithText("See what an update brings").assertCountEquals(1)
+        rule.onAllNodesWithText("Quicker Home").assertCountEquals(1)
+        press(Key.DirectionRight); settle()
+        rule.onAllNodesWithText("See what an update brings").assertCountEquals(0)
+    }
+
+    @Test fun anUpdateWithoutNotesJustSaysItsReady() {
+        s.homeReady = true
+        s.update = Updater.Ready("1.2.0", java.io.File("FireSky-1.2.0.apk"))
+        settle()
+        repeat(3) { if (s.focusAt != "t-update") press(Key.DirectionLeft) }
+        assertEquals("t-update", s.focusAt)
+        settle()
+        rule.onAllNodesWithText("Ready to install · OK to update").assertCountEquals(1)
+    }
+
     @Test fun theStepsOpenAndBackClosesThem() {
         s.guide = true; settle()
         press(Key.DirectionRight)

@@ -1,0 +1,29 @@
+# Changelog
+
+What each release of FireSky brings. TVs show the first three points of a release on its update
+card, so lead with what people will notice and keep each point short: about 60 characters.
+
+Releases go up the middle number: 1.2.0, 1.3.0 and so on. The last number is kept for test builds
+put on a TV between releases (1.2.1, 1.2.2), which the next release always replaces.
+
+Before tagging a release, rename **Unreleased** to its version and date, like `## 1.2.0 - 2026-11-20`.
+The release workflow publishes that section as the release notes, and stops if it has none.
+
+## 1.2.0 - 2026-11-10
+
+- Hold ≡ in any app for the time, weather and your apps
+- A clock when you pause, and a note when rain is near
+- See what an update brings before you install it
+- A note when the space station is about to pass over
+- Clouds and rain move with the real wind
+- A hot-air balloon on some calm mornings
+- Fireworks over the hills at New Year
+
+## 1.1.0 - 2026-11-10
+
+- Pages for films and shows: Play/Pause on a card
+- More weather: wind, UV, air quality and tonight's sky
+- Lightning on the idle screen in a thunderstorm
+- Updates itself from GitHub, after one press of OK
+- Set up from a computer with one command
+- Settings, and your TMDB key from your phone, on the TV
