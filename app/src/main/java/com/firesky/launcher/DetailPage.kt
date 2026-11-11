@@ -191,33 +191,95 @@ private fun TitleSky(art: ImageBitmap?, land: String?, hue: Color, sun: Sun, ris
         }
     }
     fun col(o: Int, a: Float = 1f) = Color(v[o] / 255f, v[o + 1] / 255f, v[o + 2] / 255f, a)
+    // The place the settings choose, as the home screen shows it for this app; null for mountains.
+    val place = remember(land, sun) { Places.current(land, sun) }
+    val layers = remember(place, hz) {
+        place?.let { pl ->
+            List(4) { i ->
+                val base = hz + pl.base[i]
+                if (base > H + 100) null else Path().apply {
+                    moveTo(0f, H)
+                    for (j in 0 until Places.DETAIL) lineTo(j * W / (Places.DETAIL - 1), base - pl.height[i][j])
+                    lineTo(W, H); close()
+                }
+            }
+        }
+    }
+    val lit = Places.lit(minute ?: minuteNow(), sun)
+    val windows = remember(place, hz, lit) { place?.let { windowsOf(it, hz, lit) } }
+    val wl = if (place != null) place.water?.let { hz + it } else if (v[Sky.WATER] > .5f) hz else null
     Canvas(Modifier.fillMaxSize()) {
-        fun DrawScope.scene() {
-            drawRect(Brush.verticalGradient(0f to col(0), .55f * hz / H to col(3), hz / H to col(6), startY = 0f, endY = H), size = Size(W, H))
+        fun DrawScope.scene(upto: Int) {
+            val horizon = if (place != null) wl ?: hz else hz
+            drawRect(Brush.verticalGradient(0f to col(0), .55f * horizon / H to col(3), horizon / H to col(6), startY = 0f, endY = H), size = Size(W, H))
             art?.let {
                 drawImage(it, dstOffset = IntOffset(0, ((1 - rise) * 56).roundToInt()), dstSize = IntSize(W.toInt(), H.toInt()), alpha = rise)
                 // The picture gives way to the hour's own sky at the top, where the readings sit.
                 drawRect(Brush.verticalGradient(0f to col(0, .92f), 1f to col(0, 0f), startY = 0f, endY = 190f), size = Size(W, 190f))
             }
-            for (i in 0 until 4) {
-                drawPath(ridges[i], col(9 + i * 3))
-                if (i < 3) {
-                    val y0 = hz - (3 - i) * 30 - (200f - i * 38)
-                    drawRect(Brush.verticalGradient(0f to col(21, 0f), 1f to col(21, v[24]), startY = y0, endY = H), Offset(0f, y0), Size(W, H - y0))
+            for (i in 0 until upto) {
+                if (place != null) {
+                    layers?.get(i)?.let { drawPath(it, col(9 + i * 3)) }
+                    windows?.get(i)?.let { drawPath(it, WINDOW) }
+                    if (place.haze[i] > 0f) {
+                        val y0 = hz + place.base[i] - place.haze[i]
+                        drawRect(Brush.verticalGradient(0f to col(21, 0f), 1f to col(21, v[24]), startY = y0, endY = H), Offset(0f, y0), Size(W, H - y0))
+                    }
+                } else {
+                    drawPath(ridges[i], col(9 + i * 3))
+                    if (i < 3) {
+                        val y0 = hz - (3 - i) * 30 - (200f - i * 38)
+                        drawRect(Brush.verticalGradient(0f to col(21, 0f), 1f to col(21, v[24]), startY = y0, endY = H), Offset(0f, y0), Size(W, H - y0))
+                    }
                 }
             }
         }
         scale(size.width / W, size.height / H, pivot = Offset.Zero) {
-            val water = v[Sky.WATER] > .5f
-            clipRect(0f, 0f, W, if (water) hz else H) { scene() }
-            if (water) clipRect(0f, hz, W, H) {
-                scale(1f, -1f, pivot = Offset(W / 2, hz)) { scene() }
-                drawRect(Color(0xFF040810).copy(alpha = .4f), Offset(0f, hz), Size(W, H - hz))
+            val front = place?.front ?: 4
+            clipRect(0f, 0f, W, wl ?: H) { scene(4) }
+            if (wl != null) clipRect(0f, wl, W, H) {
+                scale(1f, -1f, pivot = Offset(W / 2, wl)) { scene(front) }
+                drawRect(Color(0xFF040810).copy(alpha = .4f), Offset(0f, wl), Size(W, H - wl))
+                // Rocks and the like stand in front of the water.
+                for (i in front until 4) layers?.get(i)?.let { drawPath(it, col(9 + i * 3)) }
             }
             // The same shades the backdrop paints in behind the home screen's words.
             drawRect(Brush.radialGradient(.35f / .95f to Color.Transparent, 1f to Color.Black.copy(alpha = .45f), center = Offset(W / 2, H / 2), radius = H * .95f), size = Size(W, H))
             drawRect(Brush.verticalGradient(.42f to Color.Transparent, 1f to Color.Black.copy(alpha = .8f), startY = 0f, endY = H), size = Size(W, H))
             drawRect(Brush.horizontalGradient(0f to Color.Black.copy(alpha = .68f), .7f to Color.Transparent, startX = 0f, endX = W), size = Size(W, H))
+        }
+    }
+}
+
+/** A lit window, as the backdrop lights them but quieter, since the page's words sit over them. */
+private val WINDOW = Color(0x80FFD08A)
+
+/**
+ * The lit windows of a place's buildings, in the same grid as the backdrop's: the same share lit
+ * for the hour, kept off the walls and below any spire or mast.
+ */
+private fun windowsOf(p: Places.Land, hz: Float, lit: Float): List<Path?> = List(4) { i ->
+    if (p.windows[i] <= 0f || lit <= 0f) return@List null
+    val big = p.windows[i] > 1.5f
+    val cw = if (big) 8f else 5f; val ch = if (big) 11f else 7f
+    val base = hz + p.base[i]
+    Path().apply {
+        var gx = 0
+        while ((gx + 1) * cw < W) {
+            val x0 = gx * cw; val mid = (x0 + cw * .5f).roundToInt().coerceIn(3, Places.DETAIL - 4)
+            val id = p.seed[i][mid]
+            if (id > 0f && p.seed[i][mid - 3] == id && p.seed[i][mid + 3] == id) {
+                val top = base - p.wall[i][mid] + 6f
+                var gy = 0
+                while (true) {
+                    val y1 = base - (gy + .3f) * ch; val y0 = base - (gy + .78f) * ch
+                    if (y0 < top) break
+                    val h = ((gx * 73856093) xor (gy * 19349663) xor (id * 1e6f).toInt() * 83492791).let { (it ushr 8) and 0xFFFF } / 65535f
+                    if (y1 < base - 5f && h < lit) addRect(androidx.compose.ui.geometry.Rect(x0 + cw * .3f, y0, x0 + cw * .68f, y1))
+                    gy++
+                }
+            }
+            gx++
         }
     }
 }

@@ -116,4 +116,54 @@ class GlanceTest {
         assertEquals(3, heard.size)
         Playing.changed = null
     }
+
+    private val min = 60_000L
+
+    private fun episode(e: Int, at: Long, lengthMin: Long, watchedAt: Long) = Watching.Item(
+        "com.netflix.ninja", "p$e", "The Long Way Home", 2, e, null, null, 0, null, at, lengthMin * min, watchedAt,
+    )
+
+    /** As it happened on a real TV: E4 on screen 27 minutes in, while Netflix's list had already moved the show on to E5. */
+    @Test fun theNextEpisodeInTheListIsntTakenForTheOneOnScreen() {
+        val clock = android.os.SystemClock.elapsedRealtime()
+        val began = System.currentTimeMillis() - 2 * min
+        val e4 = Playing.Now("com.netflix.ninja", null, true, 27 * min, 0, clock, 1f, startMs = 25 * min, since = began)
+        val e5 = episode(5, 7 * min, 49, began - 60 * min)
+        assertNull(Playing.match(listOf(e5), e4, clock))
+    }
+
+    @Test fun resumingWhereTheListLeftOffIsThatEpisode() {
+        val clock = android.os.SystemClock.elapsedRealtime()
+        val began = System.currentTimeMillis() - 2 * min
+        val e4 = Playing.Now("com.netflix.ninja", null, true, 27 * min, 0, clock, 1f, startMs = 25 * min, since = began)
+        val saved = episode(4, 25 * min + 10_000, 40, began - 90 * min)
+        val e5 = episode(5, 7 * min, 49, began - 60 * min)
+        assertEquals(4, Playing.match(listOf(e5, saved), e4, clock)?.episode)
+    }
+
+    /** Netflix also saves the list while you watch; a place already passed in this stretch is the one on screen. */
+    @Test fun anEntrySavedWhileWatchingCountsIfItsAPlaceAlreadyPassed() {
+        val clock = android.os.SystemClock.elapsedRealtime()
+        val began = System.currentTimeMillis() - 8 * min
+        val e4 = Playing.Now("com.netflix.ninja", null, true, 32 * min, 0, clock, 1f, startMs = 25 * min, since = began)
+        assertEquals(4, Playing.match(listOf(episode(4, 31 * min, 40, began + 6 * min)), e4, clock)?.episode)
+        assertNull(Playing.match(listOf(episode(5, 7 * min, 49, began + 6 * min)), e4, clock))
+    }
+
+    @Test fun pausingKeepsWhereWatchingBeganAndTheNextEpisodeStartsAgain() {
+        Playing.now = null
+        fun st(state: Int, at: Long) = android.media.session.PlaybackState.Builder().setState(state, at, 1f).build()
+        val playing = android.media.session.PlaybackState.STATE_PLAYING
+        Playing.report("com.netflix.ninja", st(playing, 25 * min), null)
+        val began = Playing.now!!.since
+        Playing.report("com.netflix.ninja", st(android.media.session.PlaybackState.STATE_PAUSED, 27 * min), null)
+        Playing.report("com.netflix.ninja", st(playing, 27 * min), null)
+        assertEquals(25 * min, Playing.now!!.startMs)
+        assertEquals(began, Playing.now!!.since)
+        // E4 runs out and Netflix rolls on to E5 from the start.
+        Playing.report("com.netflix.ninja", st(playing, 39 * min), null)
+        Playing.report("com.netflix.ninja", st(playing, 5_000), null)
+        assertEquals(5_000L, Playing.now!!.startMs)
+        Playing.now = null
+    }
 }

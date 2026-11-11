@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.media.MediaMetadata
 import android.media.session.MediaController
+import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.os.Handler
@@ -20,7 +21,7 @@ object Resume {
         val progress: Float? get() = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else null
     }
 
-    private val SKIP = setOf("com.spotify.tv.android", "com.amazon.bueller.music")
+    private val SKIP = setOf("com.spotify.tv.android", "com.amazon.bueller.music", BuildConfig.APPLICATION_ID)
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("resume", Context.MODE_PRIVATE)
 
@@ -98,6 +99,7 @@ class MediaListener : NotificationListenerService() {
     private var wakeOn = false
 
     override fun onListenerConnected() {
+        Stopped.watch(this)
         if (!wakeOn) { registerReceiver(wake, IntentFilter(Intent.ACTION_SCREEN_ON).apply { priority = IntentFilter.SYSTEM_HIGH_PRIORITY - 1 }); wakeOn = true }
         val m = getSystemService(MediaSessionManager::class.java) ?: return
         msm = m
@@ -139,4 +141,85 @@ class MediaListener : NotificationListenerService() {
         held.forEach { (c, cb) -> runCatching { c.unregisterCallback(cb) } }
         held.clear()
     }
+}
+
+/**
+ * A fix for Fire TV's AirPlay app, used only on TVs where it's needed.
+ *
+ * That app tells Apple Home what the first active media session is doing. It only looks when the
+ * list of active sessions changes, never when it starts, and until it has looked it reports
+ * "loading", a value its own HomeKit code rejects: it crashes the moment Apple Home asks, Android
+ * soon stops restarting it, and the TV drops out of Apple Home until it's restarted.
+ *
+ * FireSky follows that app's log. Once it has seen this crash on this TV, it keeps a media session
+ * of its own, always stopped, and switches it off and on whenever the AirPlay app starts or HomeKit
+ * comes up: a change the app sees, so there's a valid "stopped" to report before Apple Home asks.
+ * The session never plays, so the remote's play and pause keys still go to whatever really plays.
+ * TVs without the AirPlay app don't follow its log at all, and TVs where it never crashes never get
+ * the session.
+ */
+object Stopped {
+    const val AIRPLAY = "com.apple.airplay.amazon.airplay"
+    private const val NEEDED = "airplay.fix"
+
+    private var session: MediaSession? = null
+    private var watch: LogTail? = null
+    private var app: Context? = null
+    private val main = Handler(Looper.getMainLooper())
+
+    private fun prefs(c: Context) = c.getSharedPreferences("media", Context.MODE_PRIVATE)
+
+    /** Whether this TV has shown the crash, and so keeps the session. */
+    fun needed(c: Context) = prefs(c).getBoolean(NEEDED, false)
+
+    /** Follows the AirPlay app's log, if this TV has it. */
+    fun watch(c: Context) {
+        val ctx = c.applicationContext
+        app = ctx
+        if (runCatching { ctx.packageManager.getPackageInfo(AIRPLAY, 0) }.isFailure) return
+        if (needed(ctx)) hold(ctx)
+        if (watch == null) watch = LogTail(
+            "airplay-log",
+            listOf("logcat", "-T", "1", "-v", "brief", "-b", "main", "-s", "EniraService:I", "EniraService.Nsd:I", "EniraDaemon.HAP:I"),
+        ) { saw(it) }
+    }
+
+    /** One line of the AirPlay app's log. */
+    fun saw(line: String) {
+        val ctx = app ?: return
+        when {
+            "media-state.current" in line && "out of range" in line -> main.post {
+                if (!needed(ctx)) {
+                    prefs(ctx).edit().putBoolean(NEEDED, true).apply()
+                    android.util.Log.i("FireSkyMedia", "the AirPlay app crashed on its media state: keeping a stopped session from now on")
+                }
+                hold(ctx)
+            }
+            "onStartCommand" in line || "onServiceRegistered(_hap" in line -> main.post { if (session != null) nudge() }
+        }
+    }
+
+    private fun hold(c: Context) {
+        if (session != null) return
+        session = runCatching {
+            MediaSession(c, "FireSky").apply {
+                setPlaybackState(PlaybackState.Builder().setState(PlaybackState.STATE_STOPPED, 0, 0f).setActions(0).build())
+                isActive = true
+            }
+        }.onFailure { android.util.Log.w("FireSkyMedia", "no stopped session: $it") }.getOrNull()
+    }
+
+    /** Off and on again, now and once more a moment later in case it wasn't listening yet. */
+    private fun nudge() {
+        val s = session ?: return
+        fun flip() { s.isActive = false; s.isActive = true }
+        flip()
+        main.postDelayed(::flip, 600)
+        android.util.Log.i("FireSkyMedia", "showed the AirPlay app a stopped session")
+    }
+
+    /** For tests. */
+    internal fun forget() { session?.release(); session = null; watch?.stop(); watch = null; app = null }
+    internal val holding get() = session != null
+    internal fun attach(c: Context) { app = c.applicationContext }
 }

@@ -200,6 +200,10 @@ object Watching {
         changed?.invoke()
     }
 
+    /** Everything [pkg]'s list held this week, for telling which of them is playing. */
+    fun of(ctx: Context, pkg: String, now: Long = System.currentTimeMillis()): List<Item> =
+        all(ctx).filter { Resume.alias(it.pkg) == Resume.alias(pkg) && now - it.watchedAt < MAX_AGE_MS }
+
     /** The one most recently watched in each app, if it was this week. */
     fun latest(ctx: Context, now: Long = System.currentTimeMillis()): List<Item> = all(ctx)
         .groupBy { it.pkg }

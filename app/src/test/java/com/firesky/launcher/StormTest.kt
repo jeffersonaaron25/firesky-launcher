@@ -89,4 +89,21 @@ class StormTest {
         repeat(100) { t += 200; d.step(t, -1f) }
         assertTrue(d.at in 0f..CloudDrift.LOOP)
     }
+
+    /** The home screen is a still, redrawn every half minute: the water in each must be just as the last left it. */
+    @Test fun wavesStayAsTheyWereFromOneStillToTheNext() {
+        val w = CloudDrift(CloudDrift.WAVES)
+        var t = 5_000_000L
+        w.step(t, 1f)
+        repeat(90) { t += 33; w.step(t, 1f) }
+        val left = w.at
+        repeat(3) { t += 30_000; assertEquals(left, w.step(t, 1f), 0f) }
+        // The idle screen carries on from there.
+        t += 33
+        assertEquals(left + .033f, w.step(t, 1f), .001f)
+        // And they come round on the hour without a seam.
+        for (period in listOf(3f, 4f, 6f, 120f)) assertEquals(0f, CloudDrift.WAVES % period, 0f)
+        repeat(100_000) { t += 200; w.step(t, 1f) }
+        assertTrue(w.at in 0f..CloudDrift.WAVES)
+    }
 }

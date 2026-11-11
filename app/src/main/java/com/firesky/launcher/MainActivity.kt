@@ -176,7 +176,7 @@ class MainActivity : ComponentActivity(), Actions {
         }
         // Brought back by the TV waking up: the rise plays, from the first card.
         val woke = Wake.take()
-        if (woke) s.woke()
+        if (woke) woke()
         s.back()
         when {
             // The rise starts from a frame drawn after this moment, as it always has.
@@ -320,7 +320,7 @@ class MainActivity : ComponentActivity(), Actions {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         when {
-            intent.getBooleanExtra("wake", false) -> s.woke()
+            intent.getBooleanExtra("wake", false) -> woke()
             opened -> {} // Back from an app: stay on the tile you left.
             else -> s.home()
         }
@@ -463,6 +463,12 @@ class MainActivity : ComponentActivity(), Actions {
         }
     }
 
+    /** Waking: the rise, and on the day's first one, the brief. */
+    private fun woke() {
+        s.woke()
+        s.brief = runCatching { Brief.due(this, s) }.getOrNull()
+    }
+
     override fun trailer(c: Card, link: String) = leave(c) { view(link, YOUTUBE) }
 
     /** Straight into the app: its own screen appears over this one as it starts. */
@@ -514,6 +520,7 @@ class MainActivity : ComponentActivity(), Actions {
 
     override fun changed(key: String) {
         when (key) {
+            Prefs.PLACE -> s.live?.place()
             // Each set of units keeps its own forecast, so this one is fetched if it isn't there.
             Prefs.TEMPERATURE, Prefs.WIND -> {
                 s.wx = Weather.cached(this)

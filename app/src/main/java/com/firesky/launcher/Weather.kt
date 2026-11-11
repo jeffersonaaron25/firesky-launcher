@@ -191,6 +191,9 @@ object Weather {
         return c.inputStream.use { it.bufferedReader().readText() }
     }
 
+    /** How long ago the saved forecast was fetched. */
+    fun age(ctx: Context) = System.currentTimeMillis() - prefs(ctx).getLong("at", 0)
+
     /** Old, or for somewhere the TV no longer is. */
     fun stale(ctx: Context) = System.currentTimeMillis() - prefs(ctx).getLong("at", 0) > MAX_AGE_MS ||
         // A forecast saved before more was asked for is replaced at once, not when it ages.

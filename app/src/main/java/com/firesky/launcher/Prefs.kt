@@ -50,6 +50,13 @@ object Prefs {
     /** What FireSky does over other apps: "" for everything, "hold" for only the glance when ≡ is held, "off". */
     const val WATCH = "watch"
 
+    /** The land under the sky: "" for mountains, a place from [Places.KINDS], or shuffled by app ("shuffle") or by day ("daily"). */
+    const val PLACE = "place"
+
+    /** The day's brief on the first wake: "" for on, "off". */
+    const val BRIEF = "brief"
+    val brief get() = chosen(BRIEF) != "off"
+
     /** Holding ≡ over another app brings up the glance. */
     val glance get() = chosen(WATCH) != "off"
     /** A clock when you pause, and a word when the space station passes over or rain is near. */

@@ -44,7 +44,9 @@ class HomeScreenTest {
             }
         }
         override fun amazonHome() { amazon++ }
+        override fun changed(key: String) { this@HomeScreenTest.changed += key }
     }
+    private val changed = mutableListOf<String>()
 
     private fun app(pkg: String, label: String, hue: Long) = AppEntry(pkg, label, Intent(), null, null, Color(hue))
 
@@ -305,14 +307,20 @@ class HomeScreenTest {
     @Test fun fireSkySettingsOpenFromTheSettingsTileAndChangeThings() {
         Prefs.init(RuntimeEnvironment.getApplication())
         // From Auto, whatever this build's own defaults are.
-        Prefs.set(Prefs.TEMPERATURE, ""); Prefs.set(Prefs.CLOCK, "")
+        Prefs.set(Prefs.TEMPERATURE, ""); Prefs.set(Prefs.CLOCK, ""); Prefs.set(Prefs.PLACE, "")
         try {
             s.openMenu(s.dock().first { it.dockId == "settings" })
             assertEquals(MenuAct.FIRESKY, s.menu!!.items.first())
             press(Key.DirectionCenter); settle()
             assertTrue(s.settings)
-            // Temperature first: Auto, then °C.
+            // The place first: mountains, then water, and the backdrop is told.
             press(Key.DirectionRight)
+            assertEquals(Places.WATER, Prefs.chosen(Prefs.PLACE))
+            assertEquals(listOf(Prefs.PLACE), changed)
+            press(Key.DirectionLeft)
+            assertEquals("", Prefs.chosen(Prefs.PLACE))
+            // Then the temperature: Auto, then °C.
+            press(Key.DirectionDown); press(Key.DirectionRight)
             assertEquals("celsius", Prefs.chosen(Prefs.TEMPERATURE))
             assertFalse(Prefs.fahrenheit)
             press(Key.DirectionLeft)
@@ -324,6 +332,19 @@ class HomeScreenTest {
             assertFalse(s.settings)
             assertTrue(opened.isEmpty())
         } finally { Prefs.forget() }
+    }
+
+    /** More settings than fit on screen: the list follows the selection down to the last. */
+    @Test fun theLastSettingCanBeReached() {
+        s.settings = true; settle()
+        repeat(settingRows(s, act).size) { press(Key.DirectionDown) }
+        settle()
+        rule.onAllNodesWithText("Version").assertCountEquals(1)
+        rule.onAllNodesWithText("Place").assertCountEquals(0)
+        repeat(settingRows(s, act).size) { press(Key.DirectionUp) }
+        settle()
+        rule.onAllNodesWithText("Place").assertCountEquals(1)
+        s.settings = false
     }
 
     @Test fun untilHomeWorksTheFirstCardSaysHow() {

@@ -89,7 +89,8 @@ private object Bake {
         repeat(170) {
             p.color = Color.argb(((r.next() * .06 + .02) * 255).roundToInt(), 255, 255, 255)
             val x = r.next() * W; val y = r.next() * 200; val w = 40 + r.next() * 180
-            cv.drawRect(x.toFloat(), y.toFloat(), (x + w).toFloat(), (y + 1).toFloat(), p)
+            // Wrapped round at the sides too, as the clouds are, since a place's water slides it along.
+            for (dx in listOf(0, -W)) cv.drawRect((x + dx).toFloat(), y.toFloat(), (x + dx + w).toFloat(), (y + 1).toFloat(), p)
         }
         return b
     }
@@ -138,13 +139,16 @@ private object Bake {
 class Painter {
     private var prog = 0
     private var blend = 0
-    private val tex = IntArray(9)
+    private val tex = IntArray(10)
     private val fbo = IntArray(4)
     private val loc = HashMap<String, Int>()
     private val quad = ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
         put(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)); position(0)
     }
     private val halves = ByteBuffer.allocateDirect(POINTS * 4 * 2).order(ByteOrder.nativeOrder()).asShortBuffer()
+    /** Another place's heights, buildings and walls, and which one the texture holds now. */
+    private val landBuf = ByteBuffer.allocateDirect(Places.DETAIL * 4 * 4 * 2).order(ByteOrder.nativeOrder()).asShortBuffer()
+    private var landShown: Places.Land? = null
     private var kind = -1
     private var fxKind = -1
     private var w = 0; private var h = 0
@@ -164,6 +168,8 @@ class Painter {
     /** Which way the clouds drift: 1 leftwards, -1 rightwards, from where the wind at cloud height comes from. */
     var wind = 1f
     private val drift = CloudDrift()
+    /** The water's waves, which like the clouds move only while the picture does: stills redrawn later don't jump. */
+    private val waves = CloudDrift(CloudDrift.WAVES)
     /** A thunderstorm: darker cloud than rain alone, and on the idle screen, lightning. */
     var storm = false
     /** How bright the lightning is in the next moving frame, where it struck, its shape, and whether the bolt shows. */
@@ -221,7 +227,7 @@ class Painter {
         uMix = GLES30.glGetUniformLocation(blend, "uMix")
         prog = program(Shader.FRAG)
         GLES30.glUseProgram(prog)
-        GLES30.glGenTextures(9, tex, 0)
+        GLES30.glGenTextures(10, tex, 0)
         GLES30.glGenFramebuffers(4, fbo, 0)
 
         // Ridge rows are 514 bytes. At the default of 4 each row would start two bytes late.
@@ -230,6 +236,10 @@ class Painter {
         // Mirrored, so the land can slide sideways as the camera turns without a seam.
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_MIRRORED_REPEAT)
         GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_R16F, POINTS, 4, 0, GLES30.GL_RED, GLES30.GL_HALF_FLOAT, null)
+        // The other places: a column for every pixel, mirrored at the ends like the ridges.
+        texture(9, null, false, false)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_MIRRORED_REPEAT)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA16F, Places.DETAIL, 4, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, null)
         if (cat != null) {
             // The real sky is drawn into a picture of its own and brings its own aurora, so the painted
             // stars and aurora would be made and never shown.
@@ -249,10 +259,11 @@ class Painter {
         listOf("uRidge", "uStars", "uAurora", "uShim", "uCloud", "uFx").forEachIndexed { i, n ->
             GLES30.glUniform1i(GLES30.glGetUniformLocation(prog, n), i)
         }
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(prog, "uLand"), 9)
         for (n in listOf(
             "uTop", "uBot", "uSky", "uLay", "uHaze", "uCore", "uGlow", "uCloudC", "uSunP", "uHz", "uWater", "uStarA",
-            "uAuroraA", "uMoon", "uSunA", "uSunR", "uAa", "uT", "uDim", "uLate", "uKind", "uPan", "uLift", "uDrift", "uFlash", "uBolt",
-            "uSlant", "uBalloon",
+            "uAuroraA", "uMoon", "uSunA", "uSunR", "uAa", "uT", "uDim", "uLate", "uKind", "uPan", "uLift", "uDrift", "uWave", "uFlash", "uBolt",
+            "uSlant", "uBalloon", "uPlace", "uBase", "uHazeH", "uWin", "uLit", "uWl", "uFront", "uRipple", "uLight", "uLightC",
         )) loc[n] = GLES30.glGetUniformLocation(prog, n)
         if (cat != null) sky(cat)
         GLES30.glEnableVertexAttribArray(0)
@@ -343,6 +354,20 @@ class Painter {
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[0])
         GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0, POINTS, 4, GLES30.GL_RED, GLES30.GL_HALF_FLOAT, halves)
+        // Another place's land goes up only when it changes: it stays put while the sky moves.
+        val land = f.land
+        if (land != null && land !== landShown) {
+            landBuf.position(0)
+            for (i in 0 until 4) for (j in 0 until Places.DETAIL) {
+                landBuf.put(Half.toHalf(land.height[i][j])); landBuf.put(Half.toHalf(land.seed[i][j]))
+                landBuf.put(Half.toHalf(land.wall[i][j])); landBuf.put(0.toShort())
+            }
+            landBuf.position(0)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE9)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[9])
+            GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0, Places.DETAIL, 4, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, landBuf)
+            landShown = land
+        }
 
         val v = f.col
         for (i in 0 until 9) sky[i] = v[i] / 255f
@@ -351,9 +376,10 @@ class Painter {
         val hv = heaven
         val hz = 720f * v[Sky.HZ] + (hv?.lift ?: 0f)
         for (i in 0 until 4) {
-            val r = f.ridge[i]; val base = hz - (3 - i) * 30f
+            val r = land?.height?.get(i) ?: f.ridge[i]
+            val base = if (land != null) hz + land.base[i] else hz - (3 - i) * 30f
             var lo = r[0]; var hi = r[0]
-            for (j in 1 until POINTS) { if (r[j] < lo) lo = r[j]; if (r[j] > hi) hi = r[j] }
+            for (j in 1 until r.size) { if (r[j] < lo) lo = r[j]; if (r[j] > hi) hi = r[j] }
             top[i] = base - hi - 3f; bot[i] = base - lo + 3f
         }
         // Rain and snow frozen in a still would look like scratches, so a still shows just their clouds.
@@ -368,9 +394,39 @@ class Painter {
         GLES30.glUniform3f(loc.getValue("uGlow"), v[Sky.GLOW] / 255f, v[Sky.GLOW + 1] / 255f, v[Sky.GLOW + 2] / 255f)
         GLES30.glUniform3f(loc.getValue("uCloudC"), v[Sky.CLOUD] / 255f, v[Sky.CLOUD + 1] / 255f, v[Sky.CLOUD + 2] / 255f)
         // The sun where it really is, when the real sky is drawn.
-        if (hv != null) GLES30.glUniform2f(loc.getValue("uSunP"), hv.sunX, hv.sunY) else GLES30.glUniform2f(loc.getValue("uSunP"), v[Sky.SUN_X], v[Sky.SUN_Y])
+        // The painted sun keeps its height above the place's own horizon, as the real sky does.
+        val sunY = hv?.sunY ?: (v[Sky.SUN_Y] + (land?.horizon ?: 0f) / 720f)
+        GLES30.glUniform2f(loc.getValue("uSunP"), hv?.sunX ?: v[Sky.SUN_X], sunY)
         GLES30.glUniform1f(loc.getValue("uHz"), v[Sky.HZ])
-        GLES30.glUniform1f(loc.getValue("uWater"), v[Sky.WATER])
+        // Mountains have water below them only in some lights; other places have it or don't.
+        GLES30.glUniform1f(loc.getValue("uWater"), if (land != null) (if (land.water != null) 1f else 0f) else v[Sky.WATER])
+        GLES30.glUniform1i(loc.getValue("uPlace"), if (land != null) 1 else 0)
+        if (land != null) {
+            GLES30.glUniform1fv(loc.getValue("uBase"), 4, land.base, 0)
+            GLES30.glUniform1fv(loc.getValue("uHazeH"), 4, land.haze, 0)
+            GLES30.glUniform1fv(loc.getValue("uWin"), 4, land.windows, 0)
+        }
+        GLES30.glUniform1f(loc.getValue("uLit"), f.lit)
+        GLES30.glUniform1f(loc.getValue("uWl"), land?.water ?: 0f)
+        GLES30.glUniform1i(loc.getValue("uFront"), land?.front ?: 4)
+        GLES30.glUniform1f(loc.getValue("uRipple"), if (land?.water != null) 1f else 0f)
+        // The light a place's water catches: the sun when it's up, laying a path the lower it is, else the moon in its phase.
+        var lx = 0f; var ly = 0f; var la = 0f; var lr = .86f; var lg = .9f; var lb = 1f
+        if (land?.water != null) {
+            val sunA = if (hv != null && !hv.sunIn) 0f else v[Sky.SUN_A]
+            if (sunA > .05f) {
+                lx = (hv?.sunX ?: v[Sky.SUN_X]) * 1280f; ly = sunY * 720f
+                la = sunA * (.25f + .75f * (ly / 720f / .6f).coerceIn(0f, 1f))
+                lr = v[Sky.CORE] / 255f; lg = v[Sky.CORE + 1] / 255f; lb = v[Sky.CORE + 2] / 255f
+            } else if (hv != null) {
+                for (k in 0 until hv.dotCount) if (hv.dots[k * 8 + 7] == 1f) {
+                    lx = hv.dots[k * 8]; ly = hv.dots[k * 8 + 1]
+                    la = hv.dots[k * 8 + 6] * (.3f + .7f * (hv.moonLight[2] + 1f) / 2f)
+                }
+            } else if (v[Sky.MOON] > .05f) { lx = .8f * 1280f; ly = .18f * 720f; la = v[Sky.MOON] * .8f }
+        }
+        GLES30.glUniform3f(loc.getValue("uLight"), lx, ly, la)
+        GLES30.glUniform3f(loc.getValue("uLightC"), lr, lg, lb)
         // The real sky carries its own brightness for dusk, moonlight and cloud; the painted one fades by time of day.
         GLES30.glUniform1f(loc.getValue("uStarA"), if (hv != null) 1f else v[Sky.STARS])
         GLES30.glUniform1f(loc.getValue("uAuroraA"), if (hv != null) 0f else v[Sky.AURORA])
@@ -379,6 +435,7 @@ class Painter {
         GLES30.glUniform1f(loc.getValue("uPan"), hv?.pan ?: 0f)
         GLES30.glUniform1f(loc.getValue("uLift"), hv?.lift ?: 0f)
         GLES30.glUniform1f(loc.getValue("uDrift"), drift.step(SystemClock.uptimeMillis(), wind * speed))
+        GLES30.glUniform1f(loc.getValue("uWave"), waves.step(SystemClock.uptimeMillis(), 1f))
         GLES30.glUniform1f(loc.getValue("uSlant"), Wind.slant(wind, speed))
         // The balloon only drifts across the moving picture: caught in a still, it would hang there.
         GLES30.glUniform4f(loc.getValue("uBalloon"), balloon[0], balloon[1], balloon[2], if (falling) balloon[3] else 0f)
@@ -480,6 +537,8 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
     private val flow = Flow()
     private val painter = Painter()
     private var sun = Sky.DEFAULT_SUN
+    /** The tile settled on, whose place is shown. */
+    private var focusId: String? = null
     private var kind = Sky.CLEAR
 
     private var dpy: EGLDisplay? = null
@@ -576,7 +635,9 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
     private fun sky(dt: Float, draw: Boolean) {
         if (cat == null) return
         val here = Place.get(context)
-        Heavens.frame(skyF, Heavens.now(), here.lat, here.lon, 720.0 * flow.col[Sky.HZ], Heavens.cloudTest ?: cloud, view, dt)
+        // The sun, moon and stars rise and set on the place's own horizon: over water that's well above the mountains'.
+        val hz = 720.0 * flow.col[Sky.HZ] + (flow.land?.horizon ?: 0f)
+        Heavens.frame(skyF, Heavens.now(), here.lat, here.lon, hz, Heavens.cloudTest ?: cloud, view, dt)
         // Clouds drift away from where the wind at cloud height comes from, as seen through this window.
         painter.wind = windFrom?.let { from ->
             val s = sin((from - skyF.viewAz) * PI / 180).toFloat()
@@ -628,6 +689,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 painter.init(width, height, cat)
                 apply()
                 painter.weather(shownKind())
+                flow.target(flow.shape, flow.tint, landFor(focusId))
                 flow.snap(minuteNow(), sun)
                 sky(0f, true)
                 painter.still(flow, cur, clock(), lateNow())
@@ -694,6 +756,8 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         if (!ready) return
         if (fade >= 0f) { queued = seconds; return }
         apply()
+        // Looked at again each time, so a daily place changes with the morning and a new setting shows.
+        flow.target(flow.shape, flow.tint, landFor(focusId))
         flow.snap(minuteNow(), sun)
         sky(0f, true)
         painter.still(flow, 1 - cur, clock(), lateNow())
@@ -786,9 +850,16 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
 
     /** The tile you've settled on: its land, and the colour to wash it with. */
     fun focus(id: String?, hue: FloatArray?) = h.post {
-        flow.target(id?.let(Sky::shape), hue)
+        focusId = id
+        flow.target(id?.let(Sky::shape), hue, landFor(id))
         if (!idle) scene(FADE_S)
     }
+
+    /** The place chosen in the settings, for [id]: its own when shuffled, today's when it changes daily. */
+    private fun landFor(id: String?): Places.Land? = Places.current(id, sun)
+
+    /** The place setting changed: the land under the sky again. */
+    fun place() = h.post { if (!idle) scene(FADE_S) }
 
     fun weather(kind: Int, sun: Sun, cloud: Int = 0, windFrom: Int? = null, storm: Boolean = false, windKmh: Float = 10f) = h.post {
         this.kind = kind; this.sun = sun; this.cloud = cloud; this.windFrom = windFrom; this.storm = storm

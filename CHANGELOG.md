@@ -9,6 +9,15 @@ put on a TV between releases (1.2.1, 1.2.2), which the next release always repla
 Before tagging a release, rename **Unreleased** to its version and date, like `## 1.2.0 - 2026-11-20`.
 The release workflow publishes that section as the release notes, and stops if it has none.
 
+## 1.3.0 - 2026-11-11
+
+- Pick the land under the sky: mountains, water, city and more
+- A morning brief on the first wake: weather, light, tonight's sky
+- City windows that come and go, water that moves when idle
+- Each app gets its own coast, skyline, plains or islands
+- The glance no longer names the wrong episode
+- Helps Apple Home reach the TV if Fire TV's AirPlay crashes
+
 ## 1.2.0 - 2026-11-10
 
 - Hold ≡ in any app for the time, weather and your apps

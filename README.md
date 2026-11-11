@@ -41,6 +41,7 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and sends
 ## Features
 
 - **The real sky** for your location, computed on the TV: stars, moon and planets, space station passes, meteor showers, the northern lights, and live clouds.
+- **A place under it:** mountains, a lake or coast, a city whose windows light up after dark, plains, or islands, or shuffle them. Each app gets its own version of the place, and water reflects the real sky.
 - **Continue watching** from Netflix, Kodi or any app that reports playback, with the time it would end.
 - **Usually now:** the app you tend to open at this hour, learned on the TV.
 - **New on your apps:** new and trending films and shows on the services you have installed, plus new episodes and seasons of what you watch. Optional; needs a free TMDB key.
@@ -50,6 +51,7 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and sends
 - **Instant Home.** The Home button and waking the TV land on FireSky, not Amazon's home screen.
 - **PlayStation tile** that shows whether the console is on and switches to its input (TVs with Fire TV built in).
 - **While you watch:** hold **≡** in any app for the time, the weather and your apps. A clock shows when you pause, and a quiet note when the space station is about to pass over or rain is near.
+- **Morning brief:** the first time the TV wakes each day, the date, the weather, the light and tonight's sky for a few seconds. Any key skips it.
 - **Idle mode:** after three minutes untouched, only the sky and the clock remain, with lightning in a thunderstorm, a hot-air balloon on some calm mornings, and fireworks at New Year.
 
 ## Screenshots
@@ -62,6 +64,8 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and sends
 | Weather, from the temperature in the corner | All apps, without the clutter |
 | ![The space station crossing the sky](docs/screenshots/space-station.jpg) | ![The northern lights during a strong storm](docs/screenshots/northern-lights.jpg) |
 | The view follows the space station as it passes over | The northern lights (shown during a simulated Kp 9 storm) |
+| ![The home screen over water](docs/screenshots/place-water.jpg) | ![The home screen over islands](docs/screenshots/place-islands.jpg) |
+| Water under the sky instead of mountains | Shuffled, each app gets a place of its own |
 
 ## Compatibility
 
@@ -135,11 +139,13 @@ FireSky's settings are on the TV: hold **OK** on the **Settings** tile (or press
 
 | Setting | What it does |
 |---|---|
+| Place | The land under the sky: Mountains, Water, City, Plains or Islands; or shuffled, each app its own or a new one each day |
 | Temperature, Wind, Clock | °C or °F, mph or km/h, 12 or 24-hour. Auto follows the TV |
 | Streaming country | Where your subscriptions are, for New and Trending. Auto follows the TV |
 | PlayStation tile | Always in the dock on a given HDMI port, or only when a PlayStation is on |
 | While you watch | The glance when you hold **≡** in another app, the pause clock and the notes. Can be just the glance, or off |
 | New and Trending | Scan the QR code with your phone and paste a free TMDB key there. No typing on the remote |
+| Morning brief | On or off: the day's brief on the first wake |
 | Home button | Whether Home opens FireSky, and how to set it up if not |
 | Hidden apps | Brings back apps hidden from All apps |
 | Version | Installs a downloaded update, or looks for one |

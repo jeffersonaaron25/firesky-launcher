@@ -63,6 +63,7 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import kotlinx.coroutines.delay
 import java.util.Calendar
+import kotlin.math.abs
 import kotlin.math.ceil
 
 /** What another app is playing, from its media session: enough to say when it ends. */
@@ -72,16 +73,30 @@ object Playing {
         val positionMs: Long, val durationMs: Long,
         /** When [positionMs] was true, on the elapsed-time clock, and how fast it's going. */
         val at: Long, val speed: Float,
+        /**
+         * Where this stretch of watching began, and when by the wall clock: what tells the episode on
+         * screen from the others in the app's continue-watching list.
+         */
+        val startMs: Long = positionMs, val since: Long = 0L,
     ) {
+        /** Where it is right now. */
+        fun positionAt(now: Long = SystemClock.elapsedRealtime()): Long =
+            if (playing && at > 0) positionMs + ((now - at) * speed).toLong() else positionMs
+
         /** How much is left right now, if the app says how long it is. */
         fun leftMs(now: Long = SystemClock.elapsedRealtime()): Long? {
             if (durationMs <= 0 || positionMs < 0) return null
-            val pos = if (playing && at > 0) positionMs + ((now - at) * speed).toLong() else positionMs
-            return (durationMs - pos).coerceAtLeast(0)
+            return (durationMs - positionAt(now)).coerceAtLeast(0)
         }
 
         val progress: Float? get() = leftMs()?.let { 1f - it.toFloat() / durationMs }
     }
+
+    /** How far a continue-watching entry's saved place can be from where watching began and still be it. */
+    private const val SLACK_MS = 2 * 60_000L
+    /** Starting again this near the beginning, after being this much further on, is the next episode rolling on. */
+    private const val RESTART_MS = 3 * 60_000L
+    private const val JUMP_MS = 5 * 60_000L
 
     @Volatile var now: Now? = null
     /** Called on the main thread when what's playing starts, pauses, stops or changes. */
@@ -91,12 +106,17 @@ object Playing {
     fun report(pkg: String, st: PlaybackState?, meta: MediaMetadata?) {
         if (pkg == BuildConfig.APPLICATION_ID) return
         val n = when (st?.state) {
-            PlaybackState.STATE_PLAYING, PlaybackState.STATE_PAUSED -> Now(
-                pkg,
-                meta?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)?.ifBlank { null } ?: meta?.getString(MediaMetadata.METADATA_KEY_TITLE)?.ifBlank { null },
-                st.state == PlaybackState.STATE_PLAYING, st.position, meta?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L,
-                st.lastPositionUpdateTime, st.playbackSpeed,
-            )
+            PlaybackState.STATE_PLAYING, PlaybackState.STATE_PAUSED -> {
+                val was = now?.takeIf { it.pkg == pkg }
+                val fresh = was == null || (st.position < RESTART_MS && was.positionAt(st.lastPositionUpdateTime) - st.position > JUMP_MS)
+                Now(
+                    pkg,
+                    meta?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)?.ifBlank { null } ?: meta?.getString(MediaMetadata.METADATA_KEY_TITLE)?.ifBlank { null },
+                    st.state == PlaybackState.STATE_PLAYING, st.position, meta?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L,
+                    st.lastPositionUpdateTime, st.playbackSpeed,
+                    if (fresh) st.position else was!!.startMs, if (fresh) System.currentTimeMillis() else was!!.since,
+                )
+            }
             else -> if (now?.pkg == pkg) null else return
         }
         now = n
@@ -109,10 +129,24 @@ object Playing {
      */
     fun known(ctx: Context, n: Now?): Now? {
         if (n == null || (n.title != null && n.durationMs > 0)) return n
-        val w = runCatching { Watching.latest(ctx) }.getOrNull()?.firstOrNull { Resume.alias(it.pkg) == Resume.alias(n.pkg) } ?: return n
+        val w = match(runCatching { Watching.of(ctx, n.pkg) }.getOrDefault(emptyList()), n) ?: return n
         val name = Shows.cached(ctx, w.title)?.name?.ifBlank { null } ?: w.title
         val ep = if (w.season != null && w.episode != null) " · S${w.season} E${w.episode}" else ""
-        return Now(n.pkg, n.title ?: (name + ep), n.playing, n.positionMs, if (n.durationMs > 0) n.durationMs else w.durationMs, n.at, n.speed)
+        return Now(n.pkg, n.title ?: (name + ep), n.playing, n.positionMs, if (n.durationMs > 0) n.durationMs else w.durationMs, n.at, n.speed, n.startMs, n.since)
+    }
+
+    /**
+     * The continue-watching entry that is what's on screen, or null when none can be told to be.
+     * The newest entry isn't enough: Netflix had already moved a show on to its next episode while
+     * an earlier one played. So an entry saved before this stretch began has to be where it began,
+     * and one saved since has to be at a place already passed.
+     */
+    fun match(items: List<Watching.Item>, n: Now, now: Long = SystemClock.elapsedRealtime()): Watching.Item? {
+        val pos = n.positionAt(now)
+        return items.filter { w ->
+            if (w.watchedAt < n.since) abs(w.progressMs - n.startMs) <= SLACK_MS
+            else w.progressMs in (n.startMs - SLACK_MS)..(pos + SLACK_MS)
+        }.maxByOrNull { it.watchedAt }
     }
 
     /** "ends 9:47 PM if you carry on", when the app says how long it is. */

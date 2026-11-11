@@ -208,6 +208,8 @@ private fun handleKey(s: HomeState, act: Actions, e: KeyEvent, fm: FocusManager)
         if (up) s.idle = false
         return true
     }
+    // Any press puts the brief away and then does what it always does.
+    if (s.brief != null) s.brief = null
     // The app you picked is still opening, so another OK would open it twice.
     if (isOk(e) && SystemClock.uptimeMillis() < s.openingUntil) return true
     // The QR pages close with Back (or OK); under them, FireSky's settings have keys of their own.
@@ -431,9 +433,14 @@ private fun Screen(s: HomeState, act: Actions) {
     }
     // A wake shows black until the rise begins, never a frame of the screen as it was.
     fun riseNow() = if (s.wakeTick != riseFor) 0f else rise.value
-    fun Modifier.rising(delay: Float) = graphicsLayer {
+    // The day's brief holds the title, cards and dock back, then hands over to them.
+    val briefA by animateFloatAsState(if (s.brief != null) 1f else 0f, tween(if (s.brief != null) 0 else 700), label = "brief")
+    LaunchedEffect(s.brief) { if (s.brief != null) { delay(WAKE_MS.toLong() + Brief.SHOWN_MS); s.brief = null } }
+    var lastBrief by remember { mutableStateOf(s.brief) }
+    SideEffect { s.brief?.let { lastBrief = it } }
+    fun Modifier.rising(delay: Float, always: Boolean = false) = graphicsLayer {
         val p = riseAt(riseNow(), delay)
-        alpha = p
+        alpha = if (always) p else p * (1 - briefA)
         translationY = z.px(20f) * (1 - p)
     }
     // Whether the rise is under way, not how far along: the frames in between only need drawing.
@@ -457,9 +464,12 @@ private fun Screen(s: HomeState, act: Actions) {
             Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Color.Black.copy(alpha = .5f), .6f to Color.Transparent)))
         }
 
-        Status(s, wx, now, req("wx"), { select(it.key); s.focusAt = it.key }, Modifier.align(Alignment.TopEnd).padding(top = z.d(42), end = z.d(60)).rising(200f))
+        Status(s, wx, now, req("wx"), { select(it.key); s.focusAt = it.key }, Modifier.align(Alignment.TopEnd).padding(top = z.d(42), end = z.d(60)).rising(200f, always = true))
 
         Box(Modifier.offset(z.d(72), z.d(176)).graphicsLayer { alpha = ui }.rising(300f)) { Hero(hero) }
+        if (briefA > 0f) (s.brief ?: lastBrief)?.let { b ->
+            Box(Modifier.offset(z.d(72), z.d(176)).rising(300f, always = true).graphicsLayer { alpha = briefA }) { BriefView(b) }
+        }
 
         if (tonight.isNotEmpty()) {
             Row(

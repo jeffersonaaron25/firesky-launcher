@@ -205,6 +205,12 @@ object Sky {
         range(s.seed, s.height, s.rough)
     }
 
+    /** An app's seed, height and roughness, which every kind of place builds that app's own version from. */
+    fun look(id: String): Triple<Int, Float, Double> {
+        val s = SHAPES[id] ?: Shape(id.hashCode(), .7f + abs(id.hashCode() % 50) / 100f, .4 + abs(id.hashCode() % 20) / 100.0)
+        return Triple(s.seed, s.height, s.rough)
+    }
+
     /** Mountains that belong to no app, for the backdrop to drift through when left alone. */
     fun dream(n: Int): Array<FloatArray> = range(201 + n, .66f + (n * 37 % 60) / 100f, .38 + (n * 13 % 24) / 100.0)
 }
@@ -221,16 +227,24 @@ class Flow {
         private set
     var tint: FloatArray? = null
         private set
+    /** The place under the sky when it isn't mountains, which the ridges above then only lend their shapes to. */
+    var land: Places.Land? = null
+        private set
     private var from: Array<FloatArray>? = null
     private var to: Array<FloatArray>? = null
     private var t = 0f
     private var next = 0
     val drifting get() = to != null
 
-    fun target(shape: Array<FloatArray>?, tint: FloatArray?) { this.shape = shape; this.tint = tint }
+    fun target(shape: Array<FloatArray>?, tint: FloatArray?, land: Places.Land? = null) { this.shape = shape; this.tint = tint; this.land = land }
 
     /** Everything exactly as it should be at this minute. */
+    /** How many of the city's windows are lit at this minute. */
+    var lit = 0f
+        private set
+
     fun snap(m: Float, sun: Sun) {
+        lit = Places.lit(m, sun)
         Sky.pack(m, sun, col)
         tint?.let { Sky.tint(col, it) }
         val d = Sky.dayAt(m, sun)
@@ -242,7 +256,9 @@ class Flow {
         }
     }
 
+    /** Only mountains drift from one range to the next: a city or a coast reshaping itself would just look broken. */
     fun startDrift() {
+        if (land != null) return
         from = Array(4) { ridge[it].copyOf() }; to = Sky.dream(next++); t = 0f
     }
 

@@ -86,6 +86,8 @@ class HomeState {
     @Volatile var openingUntil = 0L
 
     var panel by mutableStateOf(false)
+    /** The day's brief, while it's up in place of the cards on the first wake of the day. */
+    var brief by mutableStateOf<Brief.Text?>(null)
     /** A title's own page, when one is open. */
     var detail by mutableStateOf<Detail?>(null)
     /** What TMDB says about the titles on show, by [Details.key]. */

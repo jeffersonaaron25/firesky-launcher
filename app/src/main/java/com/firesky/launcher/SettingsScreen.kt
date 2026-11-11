@@ -31,6 +31,9 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
 import java.util.Locale
 
+/** How many settings fit on screen at once. */
+private const val SHOWN = 9
+
 /** Where the steps for the one-time setup from a computer are, for the QR code on the TV. */
 const val SETUP_PAGE = "https://github.com/jeffersonaaron25/firesky-launcher#install"
 
@@ -64,6 +67,15 @@ fun settingRows(s: HomeState, act: Actions): List<SettingRow> {
     }
     return listOf(
         SettingRow(
+            "Place",
+            when (Prefs.chosen(Prefs.PLACE)) {
+                Places.WATER -> "Water"; Places.CITY -> "City"; Places.PLAINS -> "Plains"; Places.ISLANDS -> "Islands"
+                Places.SHUFFLE -> "Shuffle · each app"; Places.DAILY -> "Shuffle · each day"; else -> "Mountains"
+            },
+            "The land under the sky. Each app gets its own version of it, as each gets its own mountains.",
+            Prefs.PLACE, listOf("", Places.WATER, Places.CITY, Places.PLAINS, Places.ISLANDS, Places.SHUFFLE, Places.DAILY),
+        ),
+        SettingRow(
             "Temperature",
             when (Prefs.chosen(Prefs.TEMPERATURE)) { "celsius", "c" -> "°C"; "fahrenheit", "f" -> "°F"; else -> auto(if (Prefs.autoFahrenheit) "°F" else "°C") },
             "Auto follows your TV's country.", Prefs.TEMPERATURE, listOf("", "celsius", "fahrenheit"),
@@ -93,6 +105,11 @@ fun settingRows(s: HomeState, act: Actions): List<SettingRow> {
             when (Prefs.chosen(Prefs.WATCH)) { "hold" -> "Only when ≡ is held"; "off" -> "Off"; else -> "Glance, clock and notes" },
             "Hold ≡ in any app for the time, the weather and your apps. A clock shows when you pause, and a note when the space station passes over or rain is near.",
             Prefs.WATCH, listOf("", "hold", "off"),
+        ),
+        SettingRow(
+            "Morning brief", if (Prefs.brief) "On" else "Off",
+            "The first time the TV wakes each day: the date, the weather and tonight's sky, for a few seconds.",
+            Prefs.BRIEF, listOf("", "off"),
         ),
         SettingRow(
             "New and Trending", if (Tmdb.on) "On" else "Off",
@@ -152,8 +169,13 @@ fun SettingsScreen(s: HomeState, act: Actions) {
                     // Wrapped by hand: T keeps to one line.
                     hintLines(rows[at].hint).forEach { T(it, 20f, 400, .72f) }
                 }
+                // More rows than fit: the ones around the selected row, with a mark where more are hidden.
+                val from = (at - SHOWN / 2).coerceIn(0, maxOf(0, rows.size - SHOWN))
+                val to = minOf(rows.size, from + SHOWN)
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(z.d(6))) {
-                    rows.forEachIndexed { i, r ->
+                    Box(Modifier.fillMaxWidth().height(z.d(14)), contentAlignment = Alignment.Center) { if (from > 0) T("▴", 14f, 400, .5f) }
+                    for (i in from until to) {
+                        val r = rows[i]
                         val on = i == at
                         Row(
                             Modifier
@@ -169,6 +191,7 @@ fun SettingsScreen(s: HomeState, act: Actions) {
                             T(if (on && r.key != null) "‹  ${r.value}  ›" else r.value, 21f, 400, if (on) 1f else .7f, color = ink)
                         }
                     }
+                    Box(Modifier.fillMaxWidth().height(z.d(14)), contentAlignment = Alignment.Center) { if (to < rows.size) T("▾", 14f, 400, .5f) }
                 }
             }
         }

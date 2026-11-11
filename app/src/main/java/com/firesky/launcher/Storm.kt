@@ -68,8 +68,9 @@ class Storm(seed: Int = 23) {
  * How far the clouds have drifted. They move with the wind while the picture is moving, frame after
  * frame, and stay where they are between one still and the next. Tied to the clock instead, they
  * leapt whenever a still was redrawn, whenever the forecast changed the wind, and once an hour.
+ * The water's waves keep time the same way, coming round every [loop] seconds.
  */
-class CloudDrift {
+class CloudDrift(private val loop: Float = LOOP) {
     private var last = 0L
     // Kept finer than it's handed out, so thousands of small steps don't add up to a drift of their own.
     private var exact = 0.0
@@ -81,7 +82,7 @@ class CloudDrift {
         last = nowMs
         if (gap in 1 until RUN_MS) {
             exact += gap / 1000.0 * wind
-            if (exact >= LOOP) exact -= LOOP else if (exact < 0) exact += LOOP
+            if (exact >= loop) exact -= loop else if (exact < 0) exact += loop
         }
         return at
     }
@@ -91,5 +92,7 @@ class CloudDrift {
         const val RUN_MS = 250L
         /** Every cloud layer's speed fits a whole number of times into this, so coming round is seamless. */
         const val LOOP = 10_000f
+        /** The water's waves come round every hour: their periods, 3, 4 and 6 seconds and 2 minutes, all fit into it. */
+        const val WAVES = 3600f
     }
 }
