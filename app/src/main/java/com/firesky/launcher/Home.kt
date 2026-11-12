@@ -87,7 +87,6 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.SolidColor
@@ -96,7 +95,6 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
@@ -172,7 +170,7 @@ val Outfit = FontFamily(
 @Composable
 fun T(
     text: String, size: Float, weight: Int = 400, alpha: Float = 1f, spacing: Float = 0f,
-    color: Color = Color.White, modifier: Modifier = Modifier,
+    color: Color = Color.White, modifier: Modifier = Modifier, lines: Int = 1,
 ) {
     val z = LocalDz.current
     BasicText(
@@ -182,7 +180,7 @@ fun T(
             fontSize = z.sp(size), fontFamily = Outfit, fontWeight = FontWeight(weight),
             letterSpacing = spacing.em,
         ),
-        maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+        maxLines = lines, softWrap = lines > 1, overflow = TextOverflow.Ellipsis,
     )
 }
 
@@ -203,11 +201,13 @@ private fun isOk(e: KeyEvent) = e.key == Key.DirectionCenter || e.key == Key.Ent
 
 private fun handleKey(s: HomeState, act: Actions, e: KeyEvent, fm: FocusManager): Boolean {
     s.lastInput = SystemClock.uptimeMillis()
+    if (e.type == KeyEventType.KeyDown) s.live?.poke()
     val up = e.type == KeyEventType.KeyUp
     if (s.idle) {
         if (up) s.idle = false
         return true
     }
+    if (!up) s.glance()
     // Any press puts the brief away and then does what it always does.
     if (s.brief != null) s.brief = null
     // The app you picked is still opening, so another OK would open it twice.
@@ -301,7 +301,7 @@ private fun pick(s: HomeState, act: Actions, m: TileMenu) {
         MenuAct.ADD_DOCK -> c.pkg?.let(s::addToDock)
         MenuAct.UNDOCK -> { s.hide(c, null); s.toast = "${c.title} is out of the dock" }
         MenuAct.HIDE_APP -> c.pkg?.let(s::hideApp)
-        MenuAct.DETAILS -> s.detail = s.detailOf(c)
+        MenuAct.DETAILS -> { Passed.opened(c.hideId); s.detail = s.detailOf(c) }
     }
 }
 
@@ -327,9 +327,146 @@ private const val WAKE_MS = 1340f
 private const val TICK_MS = 15_000L
 
 // The Tonight row, in design units: where it starts, each card and the gap between them.
+/** One sweep of light across the placeholders: from just before the first to just past the last. */
+@Composable
+private fun rememberSweep(): State<Float> =
+    rememberInfiniteTransition(label = "sweep").animateFloat(0f, 1f, infiniteRepeatable(tween(1600, easing = LinearEasing), RepeatMode.Restart), label = "sweepT")
+
+/**
+ * A tile still on its way: a soft shape with light passing over it. [x] is how far along its row it
+ * sits, so the light moves along the whole row as one.
+ */
+@Composable
+private fun Skeleton(w: Float, h: Float, round: Float, x: Float, sweep: State<Float>) {
+    val z = LocalDz.current
+    val shape = RoundedCornerShape(z.d(round))
+    Box(
+        Modifier
+            .size(z.d(w), z.d(h))
+            .clip(shape)
+            .background(Color.White.copy(alpha = .07f))
+            .drawBehind {
+                val unit = size.width / w
+                val band = 260f * unit
+                // Across a row about as wide as the screen, with room for the band to come in and go out.
+                val at = (-band + sweep.value * (SWEEP_SPAN * unit + 2 * band)) - x * unit
+                drawRect(Brush.linearGradient(
+                    0f to Color.Transparent, .5f to Color.White.copy(alpha = .09f), 1f to Color.Transparent,
+                    start = Offset(at - band, 0f), end = Offset(at + band, size.height * .6f),
+                ))
+            },
+    )
+}
+
+private const val SWEEP_SPAN = 1400f
+
 private const val ROW_X = 72f
 private const val CARD_W = 224f
 private const val CARD_GAP = 18f
+private const val SHELF_PITCH = CARD_W + CARD_GAP
+/** How the Tonight row changes: what goes leaves first, the rest close up, then the new come in. */
+private const val LEAVE_MS = 260
+private const val MOVE_AFTER_MS = 90L
+private const val MOVE_MS = 520
+private const val ENTER_AFTER_MS = 150L
+private const val ENTER_MS = 480
+private const val ENTER_STEP_MS = 60L
+
+private class Going(val card: Card, val slot: Int, val thumb: ImageBitmap?)
+
+/** What the row showed last, and what has just left it. Kept outside of state: it only follows the row. */
+private class ShelfMemory {
+    var last: List<String>? = null
+    var cards: List<Card> = emptyList()
+    val going = LinkedHashMap<String, Going>()
+    /** Each card's picture as last shown: a card on its way out keeps it, though the app lets it go at once. */
+    val thumbs = HashMap<String, ImageBitmap>()
+}
+
+/**
+ * The Tonight row, moving when it changes rather than jumping. A card that goes fades and sinks
+ * away, the ones that stay glide to their new places, and new ones rise in a moment after, one after
+ * another. What's there when the home screen appears is simply there, and while the screen is still
+ * filling in, cards fade in where their placeholders were.
+ */
+@Composable
+private fun Shelf(
+    cards: List<Card>, extra: Int, loading: Boolean, thumbOf: (String) -> ImageBitmap?, modifier: Modifier,
+    card: @Composable (Card, Int, Modifier) -> Unit,
+    ghost: @Composable (Card, ImageBitmap?) -> Unit,
+    placeholder: @Composable (Int) -> Unit,
+) {
+    val z = LocalDz.current
+    val mem = remember { ShelfMemory() }
+    // Read here so the row is drawn again once the ones leaving have gone.
+    var gone by remember { mutableIntStateOf(0) }
+    if (gone < 0) return
+    val keys = cards.map { it.key }
+    val before = mem.last
+    // New to the row since it was last drawn, in order: these come in, one after another.
+    val arriving = if (before == null || loading) emptyList() else keys.filter { it !in before }
+    if (before != keys) {
+        val now = keys.toHashSet()
+        mem.cards.forEachIndexed { i, c -> if (c.key !in now && c.key !in mem.going) mem.going[c.key] = Going(c, i, mem.thumbs[c.key] ?: thumbOf(c.key)) }
+        mem.going.keys.removeAll(now)
+        mem.last = keys
+    }
+    mem.cards = cards
+    mem.thumbs.keys.retainAll(keys.toHashSet())
+    for (k in keys) thumbOf(k)?.let { mem.thumbs[k] = it }
+    val leaving = mem.going.values.toList()
+    LaunchedEffect(leaving.map { it.card.key }) {
+        if (leaving.isEmpty()) return@LaunchedEffect
+        delay(LEAVE_MS.toLong())
+        leaving.forEach { mem.going.remove(it.card.key) }
+        gone++
+    }
+    val slots = (cards.size + extra).coerceAtLeast(1)
+    Box(modifier.width(z.d(SHELF_PITCH * slots - CARD_GAP)).height(z.d(126))) {
+        for (g in leaving) key("going:" + g.card.key) {
+            val k = remember { Animatable(0f) }
+            LaunchedEffect(Unit) { k.animateTo(1f, tween(LEAVE_MS, easing = FastOutSlowInEasing)) }
+            Box(
+                Modifier
+                    .offset { IntOffset(z.px(g.slot * SHELF_PITCH).roundToInt(), 0) }
+                    .size(z.d(CARD_W), z.d(126))
+                    .graphicsLayer {
+                        alpha = 1f - k.value
+                        translationY = z.px(16f) * k.value
+                        val sc = 1f - .06f * k.value
+                        scaleX = sc; scaleY = sc
+                    },
+            ) { ghost(g.card, g.thumb) }
+        }
+        cards.forEachIndexed { i, c ->
+            val order = arriving.indexOf(c.key)
+            key(c.key) {
+                val x = remember { Animatable(i * SHELF_PITCH) }
+                val enter = remember { Animatable(if (order < 0) 1f else 0f) }
+                LaunchedEffect(i) {
+                    if (x.value == i * SHELF_PITCH) return@LaunchedEffect
+                    delay(MOVE_AFTER_MS)
+                    x.animateTo(i * SHELF_PITCH, tween(MOVE_MS, easing = FastOutSlowInEasing))
+                }
+                LaunchedEffect(Unit) {
+                    if (enter.value >= 1f) return@LaunchedEffect
+                    delay(ENTER_AFTER_MS + ENTER_STEP_MS * order)
+                    enter.animateTo(1f, tween(ENTER_MS, easing = FastOutSlowInEasing))
+                }
+                card(c, i, Modifier
+                    .offset { IntOffset(z.px(x.value).roundToInt(), 0) }
+                    .graphicsLayer {
+                        val e = enter.value
+                        alpha = e
+                        translationY = z.px(22f) * (1f - e)
+                        val sc = .94f + .06f * e
+                        scaleX = sc; scaleY = sc
+                    })
+            }
+        }
+        for (i in cards.size until cards.size + extra) Box(Modifier.offset { IntOffset(z.px(i * SHELF_PITCH).roundToInt(), 0) }) { placeholder(i) }
+    }
+}
 /** How far along the row a card can start and still fit, with a sliver of screen to spare. */
 private const val ROW_FIT = 1280f - 16f - ROW_X - CARD_W
 
@@ -420,6 +557,7 @@ private fun Screen(s: HomeState, act: Actions) {
     // Rain that's on its way shows as cloud first, drifting in from the side the weather is coming from.
     LaunchedEffect(s.wx, s.live) { s.wx?.let { s.live?.weather(if (it.kind == Sky.CLEAR && it.rainSoon) Sky.CLOUDY else it.kind, it.sun, it.cloud, it.windFrom, it.storm, it.windKmh) } }
     LaunchedEffect(s.idle, s.live) { s.live?.idle(s.idle) }
+    LaunchedEffect(s.plain, s.settings, s.live) { s.live?.calm(s.plain && !s.settings) }
 
     val rise = remember { Animatable(1f) }
     var riseFor by remember { mutableIntStateOf(s.wakeTick) }
@@ -471,22 +609,26 @@ private fun Screen(s: HomeState, act: Actions) {
             Box(Modifier.offset(z.d(72), z.d(176)).rising(300f, always = true).graphicsLayer { alpha = briefA }) { BriefView(b) }
         }
 
-        if (tonight.isNotEmpty()) {
-            Row(
+        // Light sweeping across the placeholders, in step along each row, only while there are any.
+        val sweep = if (s.loading) rememberSweep() else null
+        // Cards whose pictures come in after the first load are what the placeholders were waiting for.
+        LaunchedEffect(tonight.size) { if (s.loading && s.loadDone) s.loaded() }
+        if (tonight.isNotEmpty() || s.loading) {
+            val extra = if (sweep != null) (s.expectCards - tonight.size).coerceAtLeast(0) else 0
+            Shelf(
+                tonight, extra, s.loading, { s.thumbs[it] },
                 Modifier
                     .offset(z.d(ROW_X), z.d(424))
                     .wrapContentWidth(Alignment.Start, unbounded = true)
                     .offset { IntOffset(-slide.value.roundToInt(), 0) }
                     .graphicsLayer { alpha = ui }
                     .rising(420f),
-                horizontalArrangement = Arrangement.spacedBy(z.d(CARD_GAP)),
-            ) {
-                tonight.forEachIndexed { i, c ->
-                    key(c.key) {
-                        Tile(c, s.app(c.pkg), CARD_W, 126f, false, req(c.key), tile, step = i + 4, thumb = s.thumbs[c.key])
-                    }
-                }
-            }
+                card = { c, i, place -> Tile(c, s.app(c.pkg), CARD_W, 126f, false, req(c.key), tile, step = i + 4, thumb = s.thumbs[c.key], fadeIn = s.loading, outer = place) },
+                ghost = { c, thumb ->
+                    Box(Modifier.fillMaxSize().clip(RoundedCornerShape(z.d(16))).background(bgFor(c, s.app(c.pkg)))) { TileContent(c, s.app(c.pkg), 126f, thumb) }
+                },
+                placeholder = { i -> if (sweep != null) Skeleton(CARD_W, 126f, 16f, i * SHELF_PITCH, sweep) },
+            )
         }
 
         val dockShape = RoundedCornerShape(z.d(28))
@@ -501,9 +643,11 @@ private fun Screen(s: HomeState, act: Actions) {
                 .padding(horizontal = z.d(18), vertical = z.d(12)),
             horizontalArrangement = Arrangement.spacedBy(z.d(12)),
         ) {
+            // Before the apps are known, the dock holds places for them in front of its own tiles.
+            if (sweep != null && s.apps.isEmpty()) for (i in 0 until s.expectDock) Skeleton(100f, 56f, 12f, i * 112f, sweep)
             dock.forEachIndexed { i, c ->
                 key(c.key) {
-                    Tile(c, s.app(c.pkg), 100f, 56f, true, req(c.key), tile, step = i, moving = s.moving != null && s.moving == c.dockId)
+                    Tile(c, s.app(c.pkg), 100f, 56f, true, req(c.key), tile, step = i, moving = s.moving != null && s.moving == c.dockId, fadeIn = s.loading)
                 }
             }
         }
@@ -660,6 +804,7 @@ private fun Hero(hero: State<Card?>) {
                 Box(Modifier.height(z.d(116)).widthIn(max = z.d(1130)), contentAlignment = Alignment.CenterStart) { T(card.title, 74f, 600, spacing = -.025f) }
                 if (card.meta.isNotEmpty()) T(card.meta, 26f, 400, .82f)
                 if (card.sub.isNotEmpty()) Box(Modifier.padding(top = z.d(6))) { T(card.sub, 20f, 400, .6f) }
+                if (card.why.isNotEmpty()) Box(Modifier.padding(top = z.d(10)).widthIn(max = z.d(900))) { T(card.why, 22f, 400, .86f, lines = 2) }
                 if (card.notes.isNotEmpty()) Points(card.notes)
             }
         }
@@ -787,9 +932,12 @@ private class TileSet(
 @Composable
 private fun Tile(
     c: Card, app: AppEntry?, w: Float, h: Float, dock: Boolean, req: FocusRequester?, t: TileSet,
-    step: Int = 0, moving: Boolean = false, thumb: ImageBitmap? = null,
+    step: Int = 0, moving: Boolean = false, thumb: ImageBitmap? = null, fadeIn: Boolean = false, outer: Modifier = Modifier,
 ) {
     val z = LocalDz.current
+    // Arriving while the home screen is still filling in, a tile fades in where its placeholder was.
+    val appear = remember { Animatable(if (fadeIn) 0f else 1f) }
+    LaunchedEffect(Unit) { if (appear.value < 1f) appear.animateTo(1f, tween(450)) }
     val scope = rememberCoroutineScope()
     var f by remember { mutableStateOf(false) }
     // A press only counts if it started here: a release left over from another app must do nothing.
@@ -797,7 +945,7 @@ private fun Tile(
     var hold by remember { mutableStateOf<Job?>(null) }
     val lift by animateFloatAsState(if (f) 1f else 0f, tween(280, easing = FastOutSlowInEasing), label = "lift")
     val shape = RoundedCornerShape(z.d(if (dock) 12 else 16))
-    val base = Modifier.size(z.d(w), z.d(h)).zIndex(if (f) 2f else 0f)
+    val base = outer.size(z.d(w), z.d(h)).zIndex(if (f) 2f else 0f).graphicsLayer { alpha = appear.value }
     val mod = (if (req != null) base.focusRequester(req) else base)
         .onGloballyPositioned { t.rects[c.key] = it.boundsInRoot() }
         .onFocusChanged { f = it.isFocused; if (it.isFocused) { t.onFocus(c); if (Sfx.armed) Sfx.move(step) } }
@@ -918,8 +1066,6 @@ private fun TileContent(c: Card, app: AppEntry?, h: Float, thumb: ImageBitmap? =
         Kind.SETTINGS -> Canvas(Modifier.fillMaxSize()) { gear() }
         Kind.ALL -> Canvas(Modifier.fillMaxSize()) { dots() }
         else -> when {
-            // Its own banner is just the word in small type.
-            c.pkg == AIRPLAY -> Canvas(Modifier.fillMaxSize()) { airplay() }
             app?.banner != null -> Image(app.banner, app.label, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             app?.icon != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Image(app.icon, app.label, Modifier.fillMaxHeight(.64f).aspectRatio(1f))
@@ -1051,27 +1197,6 @@ private fun DrawScope.gear() {
     for (i in 0 until 8) rotate(i * 45f, c) {
         drawLine(Color.White, Offset(c.x, c.y - r * .25f), Offset(c.x, c.y - r * .34f), strokeWidth = r * .1f, cap = StrokeCap.Round)
     }
-}
-
-private const val AIRPLAY = "com.apple.airplay.amazon.airplay"
-
-/** A screen with a triangle rising into its open bottom edge. */
-private fun DrawScope.airplay() {
-    val r = size.height
-    val c = center
-    val w = r * .62f; val h = r * .42f
-    val top = c.y - r * .26f
-    val stroke = r * .065f
-    fun tri(grow: Float) = Path().apply {
-        moveTo(c.x, top + h * .62f - grow)
-        lineTo(c.x + r * .17f + grow * 1.2f, top + h + r * .17f + grow * .6f)
-        lineTo(c.x - r * .17f - grow * 1.2f, top + h + r * .17f + grow * .6f)
-        close()
-    }
-    clipPath(tri(stroke * 1.4f), ClipOp.Difference) {
-        drawRoundRect(Color.White, Offset(c.x - w / 2, top), Size(w, h), CornerRadius(r * .06f), style = Stroke(stroke))
-    }
-    drawPath(tri(0f), Color.White)
 }
 
 private fun DrawScope.dots() {

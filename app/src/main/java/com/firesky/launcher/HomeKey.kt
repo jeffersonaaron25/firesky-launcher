@@ -19,9 +19,9 @@ import android.view.accessibility.AccessibilityEvent
 import android.widget.ImageView
 import java.io.File
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.Calendar
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
@@ -33,8 +33,6 @@ import kotlin.concurrent.thread
 class HomeKey : AccessibilityService() {
     private val main = Handler(Looper.getMainLooper())
     private var mask: View? = null
-    private var sceneKey = ""
-    private var scene: Bitmap? = null
     private var lastGo = 0L
     @Volatile private var pressed = 0L
     @Volatile private var task: ActivityManager.AppTask? = null
@@ -102,6 +100,7 @@ class HomeKey : AccessibilityService() {
     }
 
     override fun onServiceConnected() {
+        Taste.init(this)
         me = this
         Prefs.init(this)
         glance = Glance(this)
@@ -115,10 +114,11 @@ class HomeKey : AccessibilityService() {
         Guard.warm(this)
         watchLog()
         watching = Watching.watch(this)
-        prepare()
         // The list of apps and the star catalogue take a moment to make, so they're made now, in the
         // background, and are ready however the home screen is next opened.
         thread(name = "warm", isDaemon = true, priority = Thread.MIN_PRIORITY) {
+            Backdrop.restore(this)
+            prepare()
             runCatching { Apps.get(this); Heavens.catalog(this) }.onFailure { Log.w(TAG, "couldn't get ready ahead of time", it) }
         }
     }
@@ -224,9 +224,25 @@ class HomeKey : AccessibilityService() {
 
     private val giveUp = Runnable { note("gave up waiting ${since()}"); lift() }
 
+    private var slowLift = false
+    private var sceneKey = ""
+    private var scene: Bitmap? = null
+
+    /** Painting takes a moment, so a stand-in for the hour is kept ready, in case nothing better is. */
+    private fun prepare() {
+        if (Backdrop.last != null) return
+        val c = Calendar.getInstance()
+        val k = Landscape.keyFor(c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE))
+        if (k == sceneKey) return
+        sceneKey = k
+        thread(name = "scene") { scene = runCatching { Landscape.paint(k, .75f) }.getOrNull() }
+    }
+
     /** [dark] for waking: the rise underneath starts from black. */
     private fun cover(dark: Boolean = false) {
         if (mask != null) return
+        // Just after FireSky starts there's no picture of the home screen yet, so its last backdrop, kept on
+        // disk, stands in: the same place in the same colours. Only before there's ever been one, a painting.
         val pic = if (dark) null else Backdrop.home ?: Backdrop.last ?: scene
         typed.clear()
         typing = pic != null && pic === Backdrop.home
@@ -243,6 +259,8 @@ class HomeKey : AccessibilityService() {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.OPAQUE,
         ).apply { gravity = Gravity.TOP or Gravity.START }
+        // A stand-in without the tiles on it gives way slowly, so the home screen fades in over it.
+        slowLift = pic != null && pic !== Backdrop.home
         runCatching { getSystemService(WindowManager::class.java).addView(v, lp); mask = v }
             .onFailure { Log.w(TAG, "couldn't cover the screen", it) }
     }
@@ -252,18 +270,9 @@ class HomeKey : AccessibilityService() {
         typing = false; typed.clear()
         val v = mask ?: return
         mask = null
-        v.animate().alpha(0f).setDuration(180).withEndAction {
+        v.animate().alpha(0f).setDuration(if (slowLift) 500 else 180).withEndAction {
             runCatching { getSystemService(WindowManager::class.java).removeView(v) }
         }.start()
-    }
-
-    /** Painting takes a moment, so the current scene is kept ready before it's needed. */
-    private fun prepare() {
-        val c = Calendar.getInstance()
-        val k = Landscape.keyFor(c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE))
-        if (k == sceneKey) return
-        sceneKey = k
-        thread(name = "scene") { scene = runCatching { Landscape.paint(k, .75f) }.getOrNull() }
     }
 
     override fun onInterrupt() {}
@@ -475,6 +484,28 @@ object Wake {
 object Backdrop {
     @Volatile var home: Bitmap? = null
     @Volatile var last: Bitmap? = null
+        private set
+    private const val FILE = "backdrop.jpg"
+
+    /** The backdrop as it was on leaving, kept on disk as well, for the first Home press after FireSky starts again. */
+    fun keep(c: Context, b: Bitmap) {
+        last = b
+        val dir = c.applicationContext.filesDir
+        thread(name = "keep", isDaemon = true, priority = Thread.MIN_PRIORITY) {
+            runCatching {
+                val tmp = java.io.File(dir, "$FILE.tmp")
+                tmp.outputStream().use { b.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+                tmp.renameTo(java.io.File(dir, FILE))
+            }.onFailure { Log.w("FireSkyHome", "couldn't keep the backdrop", it) }
+        }
+    }
+
+    /** Just after starting: the backdrop kept from last time, if there's no newer one. */
+    fun restore(c: Context) {
+        if (last != null) return
+        val f = java.io.File(c.filesDir, FILE)
+        if (f.exists()) last = runCatching { android.graphics.BitmapFactory.decodeFile(f.path) }.getOrNull()
+    }
     /** Which tiles [home] shows and which is selected (HomeState.shape), so presses made on it are only played on the same layout. */
     @Volatile var shape: String? = null
 }

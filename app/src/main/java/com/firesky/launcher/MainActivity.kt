@@ -72,6 +72,45 @@ class MainActivity : ComponentActivity(), Actions {
                 update()
             }
         }, android.content.IntentFilter("com.firesky.launcher.UPDATE_FEED"), android.Manifest.permission.DUMP, null)
+        // For trying picks out: a pretend history, kept nowhere, and a pretend sky. adb only, as above.
+        // "as" lists titles: m:Arrival seen to the end, m2: twice, m0: left early, t8:Severance 8 episodes.
+        // Sent without "as", the picks go back to your own.
+        registerReceiver(object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context, i: Intent) {
+                s.skyTest = i.getStringExtra("sky")
+                val spec = i.getStringExtra("as")
+                if (spec == null) { Picks.drop(); loadTitles(); return }
+                val titles = s.titles; val have = s.apps.mapTo(HashSet()) { it.pkg }; val use = s.useMinutes; val hidden = s.hiddenCards
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val now = System.currentTimeMillis()
+                    val seen = spec.split(';').mapNotNull { p ->
+                        val (k, title) = p.trim().split(':', limit = 2).takeIf { it.size == 2 } ?: return@mapNotNull null
+                        val n = k.drop(1).toIntOrNull() ?: 1
+                        val at = now - (if (n == 0) 30 else 3) * 86_400_000L
+                        when {
+                            k.startsWith("t") -> Taste.Seen(title, true, "", 1f, 1f, 0, (1..n).mapTo(HashSet()) { "1x$it" }, at, at)
+                            n == 0 -> Taste.Seen(title, false, "", .1f, .1f, 0, HashSet(), at, at)
+                            else -> Taste.Seen(title, false, "", 1f, 1f, n, HashSet(), at, at)
+                        }
+                    }
+                    runCatching { Picks.refresh(this@MainActivity, titles, have, use, hidden, seen) }
+                        .onFailure { android.util.Log.w("FireSkyPicks", "couldn't try picks", it) }
+                    withContext(Dispatchers.Main) { loadTitles() }
+                }
+            }
+        }, android.content.IntentFilter("com.firesky.launcher.PICKS"), android.Manifest.permission.DUMP, null)
+        // For trying out how passed-over cards step aside: "shift" moves the date on that many days,
+        // counted apart from the real counts; "end" goes back to them. adb only, as above.
+        registerReceiver(object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context, i: Intent) {
+                Passed.trial(if (i.getBooleanExtra("end", false)) null else i.getIntExtra("shift", 0).toLong())
+                loadTitles()
+            }
+        }, android.content.IntentFilter("com.firesky.launcher.PASSED"), android.Manifest.permission.DUMP, null)
+        // The idle screen at once, for looking at it without waiting. adb only, as above.
+        registerReceiver(object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context, i: Intent) { s.idle = true }
+        }, android.content.IntentFilter("com.firesky.launcher.IDLE"), android.Manifest.permission.DUMP, null)
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
@@ -84,6 +123,8 @@ class MainActivity : ComponentActivity(), Actions {
         // Our own sounds replace the system's focus sounds in this window.
         window.decorView.isSoundEffectsEnabled = false
         HomeKey.mark("starting from scratch")
+        Taste.init(this)
+        Passed.init(this)
         s.load(this)
         // Usually made already, so the dock is there in the very first frame.
         Apps.ready()?.let { s.apps = it }
@@ -99,11 +140,14 @@ class MainActivity : ComponentActivity(), Actions {
         Apps.changed = { runOnUiThread { if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) reloadApps() } }
 
         lifecycleScope.launch {
-            loadApps()
-            refresh()
-            ready()
-            loadTitles()
+            try {
+                loadApps()
+                refresh()
+                ready()
+                loadTitles()
+            } finally { s.loaded() }
         }
+        lifecycleScope.launch { delay(HomeState.LOADING_MAX_MS); s.loaded(force = true) }
         // While the home screen is showing, keep the weather fresh and notice the PS5 turning on.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -288,7 +332,7 @@ class MainActivity : ComponentActivity(), Actions {
      */
     private fun snap() {
         val bg = s.live?.frame() ?: return
-        Backdrop.last = bg
+        Backdrop.keep(this, bg)
         if (s.idle || s.panel || s.detail != null || s.allApps || s.menu != null) return
         val d = window.decorView
         val status = s.rects[STATUS]
@@ -419,21 +463,45 @@ class MainActivity : ComponentActivity(), Actions {
             val ctx = this@MainActivity
             var items = Tmdb.cached(ctx)
             if (items.isEmpty() || Tmdb.stale(ctx)) items = Tmdb.refresh(ctx) ?: items
+            // Art for the picks likely to be shown, the weather's included, then for the New and Trending after them.
+            suspend fun art(pool: Picks.Pool?): List<Tmdb.Item> {
+                val chosen = pool?.let { p ->
+                    Picks.row(p, s.sky(), HomeState.MAX_CARDS + 2, s.skipCards(), { s.app(it.pkg) != null }, s.week()).map { it.cand } +
+                        listOf("storm", "snow", "night").mapNotNull { sky -> p.cands.firstOrNull { sky in it.skies && s.app(it.pkg) != null } }
+                }.orEmpty().distinctBy { it.key }.map { it.item() }
+                val mine = items.filter { s.app(it.pkg) != null }
+                val picks = chosen + Tmdb.pick(mine, s.useMinutes, s.skipCards(), HomeState.MAX_CARDS + 2)
+                for (t in picks) {
+                    val key = "t-${t.key}"
+                    if (key in s.thumbs) continue
+                    val art = Tmdb.art(ctx, t.backdrop)?.let(Tmdb::card) ?: continue
+                    withContext(Dispatchers.Main) { s.hues[key] = Color(art.accent); s.thumbs[key] = art.thumb }
+                }
+                return picks
+            }
+            // What's been learned from watching: as kept at once, so the row is up straight away, then
+            // learned again once a day, which can take a while.
+            // New picks take the row only once their pictures are in, so it rearranges once rather than
+            // filling with New and Trending first and changing again as each picture lands.
+            suspend fun show(p: Picks.Pool?) {
+                val shown = art(p)
+                withContext(Dispatchers.Main) { s.pool = p }
+                loadDetails(shown)
+            }
+            var pool = Picks.cached(ctx)
+            withContext(Dispatchers.Main) { s.titles = items; if (s.pool == null) s.pool = pool }
+            show(pool)
+            if (pool == null || Picks.stale(ctx)) {
+                val have = s.apps.mapTo(HashSet()) { it.pkg }
+                pool = runCatching { Picks.refresh(ctx, items, have, s.useMinutes, s.hiddenCards) }
+                    .onFailure { android.util.Log.w("FireSkyPicks", "couldn't make picks", it) }.getOrNull() ?: pool
+                show(pool)
+            }
             withContext(Dispatchers.Main) {
-                s.titles = items
-                // Pictures of titles that have left the list would otherwise be kept for as long as the app runs.
-                val listed = items.mapTo(HashSet()) { "t-${it.key}" }
+                // Pictures of titles that have left the lists would otherwise be kept for as long as the app runs.
+                val listed = (items.map { it.key } + pool?.cands.orEmpty().map { it.key }).mapTo(HashSet()) { "t-$it" }
                 s.thumbs.keys.filter { it.startsWith("t-title:") && it !in listed }.forEach { s.thumbs.remove(it); s.hues.remove(it) }
             }
-            val mine = items.filter { s.app(it.pkg) != null }
-            val picks = Tmdb.pick(mine, s.useMinutes, s.hiddenCards, HomeState.MAX_CARDS + 2)
-            for (t in picks) {
-                val key = "t-${t.key}"
-                if (key in s.thumbs) continue
-                val art = Tmdb.art(ctx, t.backdrop)?.let(Tmdb::card) ?: continue
-                withContext(Dispatchers.Main) { s.hues[key] = Color(art.accent); s.thumbs[key] = art.thumb }
-            }
-            loadDetails(picks)
             val title = s.kodi?.title ?: return@launch
             val art = Tmdb.find(ctx, title)?.let { Tmdb.art(ctx, it) }?.let(Tmdb::card) ?: return@launch
             withContext(Dispatchers.Main) { s.hues["t-kodi"] = Color(art.accent); s.thumbs["t-kodi"] = art.thumb }
@@ -457,7 +525,8 @@ class MainActivity : ComponentActivity(), Actions {
 
     /** The picture a title's page shows across the screen: TMDB's, at its full size. */
     override suspend fun art(c: Card): ImageBitmap? = withContext(Dispatchers.IO) {
-        val path = s.titles.firstOrNull { "t-${it.key}" == c.key }?.backdrop ?: Tmdb.find(this@MainActivity, c.title)
+        val path = s.titles.firstOrNull { "t-${it.key}" == c.key }?.backdrop
+            ?: s.pool?.cands?.firstOrNull { "t-${it.key}" == c.key }?.backdrop ?: Tmdb.find(this@MainActivity, c.title)
         path?.let { Tmdb.art(this@MainActivity, it) }?.let { f ->
             runCatching { BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 })?.asImageBitmap() }.getOrNull()
         }
@@ -505,7 +574,7 @@ class MainActivity : ComponentActivity(), Actions {
             // Kodi plays a path handed to it, and offers to resume from its bookmark.
             Kind.KODI -> leave(c) { view(s.kodi?.path, Kodi.PKG) || launch(Kodi.PKG) }
             // Straight to the show where the service's own ID is known, otherwise the app.
-            Kind.TITLE -> leave(c) { view(c.link, c.pkg) || launch(c.pkg) }
+            Kind.TITLE -> { Passed.opened(c.hideId); leave(c) { view(c.link, c.pkg) || launch(c.pkg) } }
             // A named card goes to the show itself; a bare one just opens the app.
             Kind.RESUME -> leave(c) { view(s.linkFor(c), c.pkg) || launch(c.pkg) }
             Kind.APP, Kind.USUAL -> leave(c) { launch(c.pkg) }

@@ -42,6 +42,8 @@ data class Card(
     val sub: String = "",
     /** Short points shown under the title in place of the meta: what an update brings. */
     val notes: List<String> = emptyList(),
+    /** Why a pick is in the row: "Shot by Roger Deakins, as was Sicario, which you finished". */
+    val why: String = "",
 )
 
 enum class MenuAct(val label: String) {
@@ -103,6 +105,28 @@ class HomeState {
     var guide by mutableStateOf(false)
     /** Whether Home opens FireSky. Fire TV allows it only after a one-time step from a computer. */
     var homeReady by mutableStateOf(true)
+    /** Still filling in after a fresh start: the rows hold soft placeholders for what's on its way. */
+    var loading by mutableStateOf(true)
+    /** How many apps the dock and cards the row had when last filled in, so the placeholders match. */
+    val expectDock get() = Prefs.chosen(SEEN_DOCK).toIntOrNull()?.coerceIn(1, 12) ?: 7
+    val expectCards get() = Prefs.chosen(SEEN_CARDS).toIntOrNull()?.coerceIn(1, MAX_CARDS) ?: 5
+
+    /** The first load has finished, though cards may still be waiting for their pictures. */
+    var loadDone = false
+        private set
+
+    /**
+     * Everything has come in: once the row has as many cards as last time, or [force]d after a while,
+     * the placeholders go, and what was there is remembered for next time.
+     */
+    fun loaded(force: Boolean = false) {
+        if (!loading) return
+        loadDone = true
+        if (!force && tonight().size < expectCards) return
+        loading = false
+        dock().count { it.kind == Kind.APP }.takeIf { it > 0 }?.let { Prefs.set(SEEN_DOCK, it.toString()) }
+        tonight().size.takeIf { it > 0 }?.let { Prefs.set(SEEN_CARDS, it.toString()) }
+    }
     /** A newer release, downloaded and waiting for you to say install. */
     var update by mutableStateOf<Updater.Ready?>(null)
     var menu by mutableStateOf<TileMenu?>(null)
@@ -124,6 +148,10 @@ class HomeState {
     val rects = HashMap<String, Rect>()
 
     var titles by mutableStateOf<List<Tmdb.Item>>(emptyList())
+    /** What's been learned from watching, and the titles picks are made from. */
+    var pool by mutableStateOf<Picks.Pool?>(null)
+    /** A pretend sky for trying the weather's pick out over adb; "none" for no story. */
+    var skyTest by mutableStateOf<String?>(null)
     var useMinutes by mutableStateOf<Map<String, Double>>(emptyMap())
     val thumbs = mutableStateMapOf<String, ImageBitmap>()
     /** The colour each card's art gives the backdrop. */
@@ -190,7 +218,7 @@ class HomeState {
             out += if (it.notes.isEmpty()) Card("t-update", Kind.UPDATE, null, "Update", "FireSky ${it.version}", "Ready to install · OK to update", SKY)
             else Card("t-update", Kind.UPDATE, null, "Update · OK to install", "FireSky ${it.version}", "", SKY, notes = it.notes)
         }
-        ps5?.takeIf { it.on }?.let {
+        ps5?.takeIf { it.on && !Prefs.ps5Off && "ps5" !in hidden }?.let {
             out += Card("t-ps5", Kind.PS5, null, "HDMI ${it.port}", it.name, "On", PS5_HUE, on = true, port = it.port)
         }
         val r = resume
@@ -240,13 +268,51 @@ class HomeState {
             }
         }
         val mine = out.filter { it.hideId == null || it.hideId !in hiddenCards }
-        val room = MAX_CARDS - mine.size
-        val picks = Tmdb.pick(titles.filter { app(it.pkg) != null && "t-${it.key}" in thumbs }, useMinutes, hiddenCards, room.coerceAtLeast(0))
-        return mine + picks.map { t ->
+        val room = (MAX_CARDS - mine.size).coerceAtLeast(0)
+        // Picks from what you watch fill the room first, each with its reason; the day's New and
+        // Trending fill whatever is left, as before anything has been learned.
+        val skip = skipCards()
+        val chosen = pool?.let { p -> Picks.row(p, sky(), room, skip, { app(it.pkg) != null && "t-${it.key}" in thumbs }, week()) }.orEmpty()
+        val picked = chosen.map { p ->
+            val a = app(p.cand.pkg)!!
+            Card("t-${p.cand.key}", Kind.TITLE, p.cand.pkg, p.tag, p.cand.title, a.label, hues["t-${p.cand.key}"] ?: a.hue, hideId = p.cand.key, link = p.cand.link, why = p.why)
+        }
+        val taken = chosen.mapTo(HashSet()) { it.cand.key }
+        val usable = titles.filter { app(it.pkg) != null && "t-${it.key}" in thumbs && it.key !in taken }
+        var feed = Tmdb.pick(usable, useMinutes, skip, room - picked.size)
+        // Resting cards come back before the row goes short: stepping aside is for making way.
+        if (picked.size + feed.size < room && skip.size > hiddenCards.size) {
+            val have = feed.mapTo(HashSet()) { it.key }
+            feed = feed + Tmdb.pick(usable.filter { it.key !in have }, useMinutes, hiddenCards, room - picked.size - feed.size)
+        }
+        return mine + picked + feed.map { t ->
             val a = app(t.pkg)!!
             Card("t-${t.key}", Kind.TITLE, t.pkg, if (t.isNew) "New" else "Trending", t.title, a.label, hues["t-${t.key}"] ?: a.hue, hideId = t.key, link = t.link)
         }
     }
+
+    /** Title cards left out of the row: the ones you hid, and the ones resting after being passed over. */
+    fun skipCards(): Set<String> = hiddenCards + Passed.resting()
+
+    /**
+     * The title cards in view while the home screen is in use, so the ones you keep passing over
+     * can step aside. The first few are in view as the row sits; further along, the one selected.
+     */
+    fun glance() {
+        if (idle || allApps || panel || settings || detail != null || menu != null) return
+        val row = rows.getOrNull(1) ?: return
+        val looked = row.take(IN_VIEW) + row.filter { it.key == current }
+        Passed.seen(looked.mapNotNullTo(LinkedHashSet()) { c -> c.hideId?.takeIf { it.startsWith("title:") } })
+    }
+
+    /** The sky outside as picks see it, from the forecast and whether it's night. */
+    fun sky(): String? = skyTest?.let { return it.takeIf { it != "none" } } ?: wx?.let { w ->
+        val c = Calendar.getInstance()
+        Picks.sky(w.kind, w.storm, Sky.isNight(c.get(Calendar.HOUR_OF_DAY) * 60f + c.get(Calendar.MINUTE), w.sun))
+    }
+
+    /** Which week it is, for the wild card that changes weekly. */
+    fun week(): Int = Calendar.getInstance().let { it.get(Calendar.YEAR) * 100 + it.get(Calendar.WEEK_OF_YEAR) }
 
     /** The dock stays in your order, so muscle memory keeps working. It never reorders itself. */
     fun dock(): List<Card> {
@@ -255,7 +321,7 @@ class HomeState {
         (Apps.DOCK + added).distinct().filter { it !in hiddenApps }.mapNotNull { app(it) }.forEach { cards[it.pkg] = appCard(it) }
         // A PlayStation gets a tile when one is plugged in, or always, at the port you set.
         val p = ps5
-        if (p != null || Prefs.ps5Port > 0) cards["ps5"] = Card(
+        if (!Prefs.ps5Off && (p != null || Prefs.ps5Port > 0)) cards["ps5"] = Card(
             "d-ps5", Kind.PS5, null, "HDMI ${p?.port ?: Prefs.ps5Port}", p?.name ?: "PlayStation 5",
             if (p?.on == true) "On" else "Standby", PS5_HUE, on = p?.on == true, port = p?.port ?: Prefs.ps5Port, dockId = "ps5",
         )
@@ -306,7 +372,9 @@ class HomeState {
 
     fun hide(c: Card, next: String?) {
         val id = c.dockId
-        if (id != null) { hidden = hidden + id; layout?.hidden = hidden; toast = "${c.title} moved to All apps" }
+        // The PlayStation isn't an app, so it can't go to All apps: it's turned off in the settings instead.
+        if (id == "ps5") { Prefs.set(Prefs.PS5, "off"); settingsTick++; toast = "PlayStation tile off. FireSky settings can bring it back" }
+        else if (id != null) { hidden = hidden + id; layout?.hidden = hidden; toast = "${c.title} moved to All apps" }
         else c.hideId?.let { hiddenCards = hiddenCards + it; layout?.cards = hiddenCards; toast = "${c.title} hidden" }
         focus(next)
     }
@@ -369,6 +437,12 @@ class HomeState {
 
     companion object {
         const val MAX_CARDS = 8
+        /** Cards of the row in view before it moves along. */
+        const val IN_VIEW = 5
+        const val SEEN_DOCK = "seen.dock"
+        const val SEEN_CARDS = "seen.cards"
+        /** However long the first load takes, the placeholders go after this. */
+        const val LOADING_MAX_MS = 10_000L
         const val IDLE_MS = 180_000L
         const val OPENING_MS = 3000L
         const val CAUGHT_UP_MS = 3_600_000L

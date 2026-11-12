@@ -87,6 +87,22 @@ object Tmdb {
         return c.inputStream.use { it.bufferedReader().readText() }
     }
 
+    /** The app a TMDB watch provider is, if FireSky knows it. Amazon is listed under two numbers. */
+    fun pkgOf(provider: Int): String? = if (provider == 119) "com.amazon.firebat" else SERVICES.firstOrNull { it.provider == provider }?.pkg
+
+    /** TMDB's number for an app's service. */
+    fun providerOf(pkg: String): Int? = SERVICES.firstOrNull { it.pkg == pkg }?.provider
+
+    /** Direct links into each title's app, from Wikidata, where it knows the app's own ID. */
+    fun linksFor(items: List<Item>): Map<String, String> {
+        val out = HashMap<String, String>()
+        for ((pkg, l) in items.groupBy { it.pkg }) {
+            val s = SERVICES.firstOrNull { it.pkg == pkg } ?: continue
+            runCatching { out += links(s, l.take(50)) }.onFailure { Log.w(TAG, "no links for $pkg: ${it.message}") }
+        }
+        return out
+    }
+
     internal fun api(path: String, vararg q: Pair<String, String>): JSONObject {
         val query = (q.toList() + ("api_key" to Prefs.tmdbKey))
             .joinToString("&") { (k, v) -> "$k=${URLEncoder.encode(v, "UTF-8")}" }

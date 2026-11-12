@@ -81,6 +81,30 @@ class WatchingTest {
         assertEquals(2, read(items + metas).last().second.size)
     }
 
+    @Test fun titlesInYourLanguageNeverWaitForTheLinesTheLogCutOff() {
+        // Your language first, then the other: the log keeps only the first 4 KB, so the rest never comes.
+        val cut = listOf(metas[0], metas[2].replace("2/4", "1/4"), metas[4].replace("4/4", "2/4"))
+        val got = read(items + cut)
+        assertEquals(listOf("The Lighthouse Keepers", "Double or Nothing"), got.last().second.map { it.title })
+        // Nothing half-read along the way: no title in the other language, and no list missing one.
+        assertTrue(got.all { (_, l) -> l.size == 2 && l.none { it.title == "Los guardianes del faro" } })
+    }
+
+    @Test fun whatWasKnownStandsInForTitlesThatNeverArrive() {
+        val before = read(items + metas).last().second
+        val got = mutableListOf<List<Watching.Item>>()
+        val r = Watching.Reader("en_US", before) { _, l -> got += l }
+        // A new episode's progress, and then the log loses every title.
+        (items.map { it.replace("progressMs=0", "progressMs=60000") } + metas[0]).forEach(r::line)
+        assertEquals(listOf("The Lighthouse Keepers", "Double or Nothing"), got.last().map { it.title })
+        assertEquals(60000L, got.last()[0].progressMs)
+        assertEquals(art1, got.last()[0].art)
+    }
+
+    @Test fun theSameListTwiceIsReportedOnce() {
+        assertEquals(1, read(items + metas + items + metas).count { it.second.isNotEmpty() })
+    }
+
     @Test fun anEmptyListMeansNothingToContinue() {
         val empty = "${p}[x][AmazonContinueWatchingReceiver] Fire TV Integration SDK function: setContinueWatchingItems invoked by package: $nf with data: List()"
         val got = read(items + metas + empty)

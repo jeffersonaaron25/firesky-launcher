@@ -192,7 +192,6 @@ object Sky {
         "com.hbo.hbonow" to Shape(105, 1.16f, .56),
         "com.hulu.plus" to Shape(106, .68f, .38),
         "com.amazon.firetv.youtube" to Shape(107, .96f, .52),
-        "com.apple.airplay.amazon.airplay" to Shape(108, .6f, .42),
         "ps5" to Shape(109, 1.3f, .64),
         "settings" to Shape(110, .44f, .38),
         "all" to Shape(111, .5f, .42),

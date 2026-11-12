@@ -57,9 +57,14 @@ object Watching {
     /**
      * Reads the log one line at a time (`logcat -v brief`). Each hand-over is a header naming the
      * app, then one line per item: first the list with progress, then the titles and pictures, once
-     * per language. [done] gets an app's whole list each time one is complete.
+     * per language. [done] gets an app's whole list each time one is complete, and only when it changed.
+     *
+     * The log keeps only the first 4 KB or so of a message, and the titles come as one long message,
+     * so with a few titles in two languages the last lines are lost. The titles count as complete
+     * once each item has one in your language, and what was [seed]ed (the list as last saved) stands
+     * in for any that never arrive, so a title cut off is never taken for one gone from the list.
      */
-    class Reader(private val locale: String, private val done: (String, List<Item>) -> Unit) {
+    class Reader(private val locale: String, seed: List<Item> = emptyList(), private val done: (String, List<Item>) -> Unit) {
         private class Prog(val durationMs: Long, val progressMs: Long, val watchedAt: Long)
         private class Meta(
             val title: String, val season: Int?, val episode: Int?, val art: String?,
@@ -70,6 +75,14 @@ object Watching {
         private val fnOf = HashMap<String, String>()
         private val progs = HashMap<String, LinkedHashMap<String, Prog>>()
         private val metas = HashMap<String, HashMap<String, Meta>>()
+        /** The items given a title in your language in the hand-over of titles now being read. */
+        private val ours = HashMap<String, HashSet<String>>()
+        private val sent = HashMap<String, Int>()
+
+        init {
+            // Known from before, in no language in particular, so any title that does arrive replaces it.
+            for (i in seed) metas.getOrPut(i.pkg) { HashMap() }[i.id] = Meta(i.title, i.season, i.episode, i.art, i.link, i.linkUntil, i.page, null)
+        }
 
         fun line(l: String) {
             val m = LINE.find(l) ?: return
@@ -83,8 +96,9 @@ object Watching {
                 if (fn == SET_ITEMS) {
                     progs[pkg] = LinkedHashMap()
                     // Nothing left to continue.
-                    if (msg.trimEnd().endsWith("List()")) done(pkg, emptyList())
+                    if (msg.trimEnd().endsWith("List()")) send(pkg, emptyList())
                 }
+                if (fn == SET_META) ours[pkg] = HashSet()
                 return
             }
             val n = ITEM.find(msg) ?: return
@@ -95,17 +109,31 @@ object Watching {
                 SET_META -> meta(body)?.let { (id, mm) ->
                     val known = metas.getOrPut(pkg) { HashMap() }
                     val old = known[id]
-                    // Each title comes once per language; yours wins.
-                    if (old == null || mm.locale == locale || old.locale != locale) known[id] = mm
+                    // Each title comes once per language; yours wins. A line cut short keeps the picture and links it had.
+                    if (old == null || mm.locale == locale || old.locale != locale) known[id] = if (old == null) mm else Meta(
+                        mm.title, mm.season, mm.episode, mm.art ?: old.art, mm.link ?: old.link,
+                        if (mm.link != null) mm.linkUntil else old.linkUntil, mm.page ?: old.page, mm.locale,
+                    )
+                    if (mm.locale == locale) ours.getOrPut(pkg) { HashSet() } += id
                 }
                 else -> return
             }
-            if (n.groupValues[1] == n.groupValues[2]) {
+            val last = n.groupValues[1] == n.groupValues[2]
+            val ready = if (fnOf[pid] == SET_ITEMS) last
+                else last || progs[pkg].orEmpty().keys.let { ids -> ids.isNotEmpty() && ours[pkg].orEmpty().containsAll(ids) }
+            if (ready) {
                 val list = items(pkg)
                 // Titles for a new item come just after its progress: wait for them rather than
                 // briefly losing the card.
-                if (list.isNotEmpty() || progs[pkg].isNullOrEmpty()) done(pkg, list)
+                if (list.isNotEmpty() || progs[pkg].isNullOrEmpty()) send(pkg, list)
             }
+        }
+
+        private fun send(pkg: String, list: List<Item>) {
+            val sig = list.map { listOf(it.id, it.title, it.season, it.episode, it.progressMs, it.durationMs, it.watchedAt, it.art, it.link) }.hashCode()
+            if (sent[pkg] == sig) return
+            sent[pkg] = sig
+            done(pkg, list)
         }
 
         private fun items(pkg: String): List<Item> = progs[pkg].orEmpty().mapNotNull { (id, p) ->
@@ -184,13 +212,16 @@ object Watching {
     /** Follows the log from this moment, after reading what it still holds. */
     fun watch(ctx: Context): LogTail {
         val app = ctx.applicationContext
-        val r = Reader(localeTag()) { pkg, items -> save(app, pkg, items) }
+        val r = Reader(localeTag(), all(app)) { pkg, items -> save(app, pkg, items) }
         return LogTail("watching", listOf("logcat", "-v", "brief", "-b", "main", "-s", "$TAG:I"), r::line)
     }
 
     @Synchronized
     fun save(ctx: Context, pkg: String, items: List<Item>) {
         val all = runCatching { JSONObject(file(ctx).readText()) }.getOrDefault(JSONObject())
+        // What was watched is kept for good, for picks: this list only holds what's still going.
+        val was = all.optJSONArray(pkg)?.let { a -> (0 until a.length()).map { fromJson(pkg, a.getJSONObject(it)) } }.orEmpty()
+        Taste.list(ctx, pkg, was, items)
         all.put(pkg, JSONArray().apply { items.forEach { put(toJson(it)) } })
         val f = file(ctx)
         val tmp = File(f.path + ".part")
@@ -209,6 +240,9 @@ object Watching {
         .groupBy { it.pkg }
         .mapNotNull { (_, l) -> l.maxByOrNull { it.watchedAt } }
         .filter { now - it.watchedAt < MAX_AGE_MS }
+
+    /** Every list as last saved, whatever its age. */
+    fun everything(ctx: Context): List<Item> = all(ctx)
 
     @Synchronized
     private fun all(ctx: Context): List<Item> = runCatching {

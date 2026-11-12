@@ -76,6 +76,11 @@ fun settingRows(s: HomeState, act: Actions): List<SettingRow> {
             Prefs.PLACE, listOf("", Places.WATER, Places.CITY, Places.PLAINS, Places.ISLANDS, Places.SHUFFLE, Places.DAILY),
         ),
         SettingRow(
+            "Motion", if (Prefs.motion) "Gentle" else "Off",
+            "Left alone for a moment, the home screen moves a little: water, city lights, clouds and stars. Any key stills it.",
+            Prefs.MOTION, listOf("", "off"),
+        ),
+        SettingRow(
             "Temperature",
             when (Prefs.chosen(Prefs.TEMPERATURE)) { "celsius", "c" -> "°C"; "fahrenheit", "f" -> "°F"; else -> auto(if (Prefs.autoFahrenheit) "°F" else "°C") },
             "Auto follows your TV's country.", Prefs.TEMPERATURE, listOf("", "celsius", "fahrenheit"),
@@ -97,8 +102,8 @@ fun settingRows(s: HomeState, act: Actions): List<SettingRow> {
         ),
         SettingRow(
             "PlayStation tile",
-            if (ps5 > 0) "Always · HDMI $ps5" else "When it's plugged in",
-            "Keep a PlayStation tile in the dock, or show one only when the TV sees it.", Prefs.PS5, listOf("0", "1", "2", "3", "4"),
+            if (Prefs.ps5Off) "Off" else if (ps5 > 0) "Always · HDMI $ps5" else "When it's plugged in",
+            "Show a PlayStation tile only when the TV sees one, keep it in the dock, or turn it off.", Prefs.PS5, listOf("0", "1", "2", "3", "4", "off"),
         ),
         SettingRow(
             "While you watch",

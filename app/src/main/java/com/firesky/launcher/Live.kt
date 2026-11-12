@@ -263,7 +263,7 @@ class Painter {
         for (n in listOf(
             "uTop", "uBot", "uSky", "uLay", "uHaze", "uCore", "uGlow", "uCloudC", "uSunP", "uHz", "uWater", "uStarA",
             "uAuroraA", "uMoon", "uSunA", "uSunR", "uAa", "uT", "uDim", "uLate", "uKind", "uPan", "uLift", "uDrift", "uWave", "uFlash", "uBolt",
-            "uSlant", "uBalloon", "uPlace", "uBase", "uHazeH", "uWin", "uLit", "uWl", "uFront", "uRipple", "uLight", "uLightC",
+            "uSlant", "uBalloon", "uPlace", "uBase", "uHazeH", "uWin", "uLit", "uWl", "uFront", "uRipple", "uLight", "uLightC", "uGrass", "uSway",
         )) loc[n] = GLES30.glGetUniformLocation(prog, n)
         if (cat != null) sky(cat)
         GLES30.glEnableVertexAttribArray(0)
@@ -410,6 +410,10 @@ class Painter {
         GLES30.glUniform1f(loc.getValue("uWl"), land?.water ?: 0f)
         GLES30.glUniform1i(loc.getValue("uFront"), land?.front ?: 4)
         GLES30.glUniform1f(loc.getValue("uRipple"), if (land?.water != null) 1f else 0f)
+        // Plains have the wind in the grass and the trees, leaning the way the clouds drift, further the harder it blows.
+        val plains = land?.kind == Places.PLAINS
+        GLES30.glUniform1f(loc.getValue("uGrass"), if (plains) 1f else 0f)
+        GLES30.glUniform1f(loc.getValue("uSway"), if (plains) 1.7f * speed.coerceAtMost(2f) * wind else 0f)
         // The light a place's water catches: the sun when it's up, laying a path the lower it is, else the moon in its phase.
         var lx = 0f; var ly = 0f; var la = 0f; var lr = .86f; var lg = .9f; var lb = 1f
         if (land?.water != null) {
@@ -469,6 +473,14 @@ class Painter {
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
 
+    /** One of the still pictures, black: what the very first picture fades in from. */
+    fun black(slot: Int) {
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[slot])
+        GLES30.glViewport(0, 0, w, h)
+        GLES30.glClearColor(0f, 0f, 0f, 1f); GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+    }
+
     /** Puts a still on the screen, or a fade between the two. */
     fun show(from: Int, to: Int, mix: Float) = present(6 + from, 6 + to, mix)
 
@@ -493,6 +505,26 @@ class Painter {
         GLES30.glBindVertexArray(vao[3]); GLES30.glDrawArrays(GLES30.GL_POINTS, 0, n)
         GLES30.glBindVertexArray(0); GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         GLES30.glDisable(GLES30.GL_BLEND)
+    }
+
+    /**
+     * A frame of the home screen's gentle motion, with rain and snow left as cloud as in a still:
+     * straight onto the screen, or at [half] size and stretched, as the idle screen draws.
+     */
+    fun ambient(f: Flow, t: Float, late: Boolean, half: Boolean) {
+        if (half) {
+            scene(f, DRIFT_W, t, false, late)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[2])
+            GLES30.glViewport(0, 0, DRIFT_W, DRIFT_H)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            present(8, 8, 0f)
+        } else {
+            scene(f, w, t, false, late)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            GLES30.glViewport(0, 0, w, h)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        }
     }
 
     /** The moving scene for the idle screen: a smaller picture, stretched. */
@@ -612,6 +644,30 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
     private var animWorkNs = 0L
     private var animWorstNs = 0L
 
+    /*
+     * The home screen's gentle motion. Left alone for a few seconds with nothing open over it, the
+     * picture moves at a low frame rate where something in it naturally would: water, a city's lights,
+     * real clouds and the stars. Mountains and plains on a clear day stay still, and draw nothing.
+     * Any key stills it at once, so moving between tiles has the chip to itself, and the frame on
+     * screen stays put.
+     */
+    /** Nothing is open over the home screen. */
+    private var calm = false
+    private var lastPoke = 0L
+    /** Frames of motion are being drawn. */
+    private var ambient = false
+    /** What's on screen is a frame of motion, which the still behind it no longer matches. */
+    private var shownAmbient = false
+    private var ambientLast = 0L
+    private var ambientFrom = 0L; private var ambientDrawn = 0; private var ambientWorkNs = 0L; private var ambientWorstNs = 0L
+    /** From adb, for measuring: frames a second, half size or full, and waiting for the chip to finish each frame. */
+    @Volatile private var ambientFps = AMBIENT_FPS
+    @Volatile private var ambientHalf = true
+    @Volatile private var ambientFinish = false
+    @Volatile private var ambientAfter = AMBIENT_AFTER_MS
+    private var ambientRunHalf = true
+    private val settle = Runnable { startAmbient() }
+
     private lateinit var choreo: Choreographer
     private val tick = Choreographer.FrameCallback { frame(it) }
 
@@ -648,6 +704,80 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         if (draw) { painter.heavens(skyF, clock()); lastSkyDraw = SystemClock.uptimeMillis() }
     }
 
+    /** A key was pressed: the motion stops where it is, and comes back after a few quiet seconds. */
+    fun poke() = h.post {
+        lastPoke = SystemClock.uptimeMillis()
+        stopAmbient()
+        maybeAmbient()
+    }
+
+    /** Whether the home screen is showing with nothing open over it. */
+    fun calm(on: Boolean) = h.post {
+        calm = on
+        if (on) maybeAmbient() else stopAmbient()
+    }
+
+    /** Starts the motion once the home screen has been left alone long enough, or plans to. */
+    private fun maybeAmbient() {
+        h.removeCallbacks(settle)
+        if (!calm || ambient || !Prefs.motion) return
+        val wait = lastPoke + ambientAfter - SystemClock.uptimeMillis()
+        if (wait > 0) h.postDelayed(settle, wait) else startAmbient()
+    }
+
+    /** Whether anything in the picture would move now: water, a city's lit windows, real clouds or fog, or stars. */
+    private fun moves(): Boolean {
+        val land = flow.land
+        return land?.water != null || (land != null && land.windows.any { it > 0f } && flow.lit > .001f) ||
+            shownKind() != Sky.CLEAR || (cat != null && skyF.dark > .05f)
+    }
+
+    private fun startAmbient() {
+        // A fade, the station or fireworks have the screen; the motion starts again when they're done.
+        if (!ready || !active || idle || !calm || ambient || !Prefs.motion || fade >= 0f || animating || sparkling || !moves()) return
+        ambient = true
+        ambientLast = 0L
+        ambientFrom = SystemClock.uptimeMillis(); ambientDrawn = 0; ambientWorkNs = 0; ambientWorstNs = 0
+        ambientRunHalf = ambientHalf
+        h.post(ambientTick)
+    }
+
+    private fun stopAmbient() {
+        h.removeCallbacks(settle)
+        if (!ambient) return
+        ambient = false
+        h.removeCallbacks(ambientTick)
+        if (ambientDrawn > 0) Log.i(TAG, "motion %.0f s: %d frames, %.1f ms each, worst %.1f%s".format(
+            (SystemClock.uptimeMillis() - ambientFrom) / 1000.0, ambientDrawn, ambientWorkNs / 1e6 / ambientDrawn, ambientWorstNs / 1e6,
+            if (ambientRunHalf) " (half size)" else ""))
+    }
+
+    /** Before a still is shown again, it's made to match the frame of motion on screen, so nothing jumps. */
+    private fun matchStill() {
+        if (!shownAmbient) return
+        painter.still(flow, cur, clock(), lateNow())
+        shownAmbient = false
+    }
+
+    private val ambientTick = object : Runnable {
+        override fun run() {
+            if (!ambient) return
+            if (!ready || !active || idle || fade >= 0f || animating || sparkling || !moves()) { stopAmbient(); return }
+            val t0 = System.nanoTime()
+            val now = SystemClock.uptimeMillis()
+            val dt = if (ambientLast == 0L) 0f else ((now - ambientLast) / 1000f).coerceAtMost(.25f)
+            ambientLast = now
+            sky(dt, true)
+            painter.ambient(flow, clock(), lateNow(), ambientRunHalf)
+            if (ambientFinish) GLES30.glFinish()
+            swap()
+            shownAmbient = true
+            val work = System.nanoTime() - t0
+            ambientDrawn++; ambientWorkNs += work; if (work > ambientWorstNs) ambientWorstNs = work
+            h.postDelayed(this, (1000L / ambientFps - work / 1_000_000).coerceAtLeast(1))
+        }
+    }
+
     /**
      * Once a second, a cheap look at the sky with nothing drawn. The stars turn, so at night the
      * picture is redrawn every half minute as a single frame. When the station rises or a meteor
@@ -660,10 +790,11 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 sparkling = true; fwFrom = SystemClock.uptimeMillis(); fwDrawn = 0; fwWorkNs = 0; fwWorstNs = 0
                 wakeLoop()
             }
-            if (ready && active && !idle && cat != null && fade < 0f && !animating) {
+            if (ready && active && calm && !ambient && SystemClock.uptimeMillis() - lastPoke > ambientAfter) maybeAmbient()
+            if (ready && active && !idle && cat != null && fade < 0f && !animating && !ambient) {
                 sky(1f, false)
                 val every = if (skyF.dark > 0f || skyF.dotCount > 0) 30_000L else 300_000L
-                if (skyF.moving) { animating = true; skyAcc = 0f; animFrom = SystemClock.uptimeMillis(); animDrawn = 0; animWorkNs = 0; animWorstNs = 0; wakeLoop() }
+                if (skyF.moving) { matchStill(); animating = true; skyAcc = 0f; animFrom = SystemClock.uptimeMillis(); animDrawn = 0; animWorkNs = 0; animWorstNs = 0; wakeLoop() }
                 else if (SystemClock.uptimeMillis() - lastSkyDraw > every) quick()
             }
             h.postDelayed(this, 1000)
@@ -689,15 +820,9 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 painter.init(width, height, cat)
                 apply()
                 painter.weather(shownKind())
-                flow.target(flow.shape, flow.tint, landFor(focusId))
-                flow.snap(minuteNow(), sun)
-                sky(0f, true)
-                painter.still(flow, cur, clock(), lateNow())
-                ready = true
-                dirty = true
-                wakeLoop()
-                h.postDelayed(refresh, REFRESH_MS)
-                h.postDelayed(skyClock, 1000)
+                glUp = true
+                // The selected tile, and so the colour, is usually known within a moment of starting.
+                if (focusId != null) firstLight() else h.postDelayed(firstLightLate, FIRST_WAIT_MS)
             }.onFailure {
                 Log.e(TAG, "backdrop couldn't start", it)
                 main.post(onFail)
@@ -710,6 +835,8 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
     override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
         h.post {
             ready = false
+            glUp = false
+            h.removeCallbacks(firstLightLate)
             h.removeCallbacks(refresh)
             h.removeCallbacks(skyClock)
             dpy?.let { d ->
@@ -727,6 +854,29 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
     override fun onSurfaceTextureUpdated(st: SurfaceTexture) {
         if (!isOpaque) isOpaque = true
         if (waiting) { waiting = false; main.post(onDrawn) }
+    }
+
+    /** The graphics are set up, though the first picture may still be waiting for the selected tile. */
+    private var glUp = false
+    private val firstLightLate = Runnable { firstLight() }
+
+    /**
+     * The first picture after starting, faded in from black in the selected tile's own colours,
+     * rather than appearing at once in others that change a moment later.
+     */
+    private fun firstLight() {
+        if (ready || !glUp) return
+        h.removeCallbacks(firstLightLate)
+        flow.target(flow.shape, flow.tint, landFor(focusId))
+        flow.snap(minuteNow(), sun)
+        sky(0f, true)
+        painter.still(flow, 1 - cur, clock(), lateNow())
+        painter.black(cur)
+        ready = true
+        fade = 0f; fadeS = FIRST_FADE_S
+        wakeLoop()
+        h.postDelayed(refresh, REFRESH_MS)
+        h.postDelayed(skyClock, 1000)
     }
 
     private fun egl(st: SurfaceTexture) {
@@ -755,6 +905,8 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
     private fun scene(seconds: Float) {
         if (!ready) return
         if (fade >= 0f) { queued = seconds; return }
+        stopAmbient()
+        matchStill()
         apply()
         // Looked at again each time, so a daily place changes with the morning and a new setting shows.
         flow.target(flow.shape, flow.tint, landFor(focusId))
@@ -800,7 +952,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 if (done) {
                     cur = 1 - cur
                     fade = -1f
-                    if (queued >= 0f) { val q = queued; queued = -1f; scene(q) }
+                    if (queued >= 0f) { val q = queued; queued = -1f; scene(q) } else maybeAmbient()
                 }
                 if (fade >= 0f || animating || sparkling) choreo.postFrameCallback(tick) else { parked = true; lastNs = 0L }
             }
@@ -829,11 +981,13 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 }
                 if (animating && !skyF.moving) {
                     animating = false
+                    maybeAmbient()
                     if (animDrawn > 0) Log.i(TAG, "sky moved %.0f s: %d frames, %.1f ms each, worst %.1f".format(
                         (SystemClock.uptimeMillis() - animFrom) / 1000.0, animDrawn, animWorkNs / 1e6 / animDrawn, animWorstNs / 1e6))
                 }
                 if (sparkling && !fireworks) {
                     sparkling = false
+                    maybeAmbient()
                     painter.show(cur, cur, 0f); swap()
                     if (fwDrawn > 0) Log.i(TAG, "fireworks %.0f s: %d frames, %.1f ms each, worst %.1f".format(
                         (SystemClock.uptimeMillis() - fwFrom) / 1000.0, fwDrawn, fwWorkNs / 1e6 / fwDrawn, fwWorstNs / 1e6))
@@ -841,7 +995,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 if (animating || sparkling) choreo.postFrameCallback(tick) else { parked = true; lastNs = 0L }
             }
             else -> {
-                if (dirty) { painter.show(cur, cur, 0f); swap(); dirty = false }
+                if (dirty) { matchStill(); painter.show(cur, cur, 0f); swap(); dirty = false }
                 parked = true
                 lastNs = 0L
             }
@@ -850,9 +1004,12 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
 
     /** The tile you've settled on: its land, and the colour to wash it with. */
     fun focus(id: String?, hue: FloatArray?) = h.post {
+        // The same tile with a new colour, its picture's own just worked out: no reason to hurry.
+        val same = id == focusId
         focusId = id
         flow.target(id?.let(Sky::shape), hue, landFor(id))
-        if (!idle) scene(FADE_S)
+        if (!ready) { firstLight(); return@post }
+        if (!idle) scene(if (same) SLOW_FADE_S else FADE_S)
     }
 
     /** The place chosen in the settings, for [id]: its own when shuffled, today's when it changes daily. */
@@ -902,9 +1059,27 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         }
     }
 
+    /**
+     * From adb only, to measure the home screen's motion:
+     *   am broadcast -a com.firesky.launcher.MOTION --ei fps 12 --ez half false --ez finish true --el after 0
+     * frames a second, drawn at half size, waiting for each frame to finish so its time is all of it,
+     * and how long after a key it starts again. With no extras, back to normal.
+     */
+    private val motionTest = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            ambientFps = i.getIntExtra("fps", AMBIENT_FPS).coerceIn(1, 60)
+            ambientHalf = i.getBooleanExtra("half", true)
+            ambientFinish = i.getBooleanExtra("finish", false)
+            ambientAfter = i.getLongExtra("after", AMBIENT_AFTER_MS).coerceAtLeast(0)
+            Log.i(TAG, "motion test: $ambientFps fps, half $ambientHalf, finish $ambientFinish, after $ambientAfter ms")
+            stopAmbient(); maybeAmbient()
+        }
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         context.registerReceiver(test, IntentFilter("com.firesky.launcher.SKY"), android.Manifest.permission.DUMP, h)
+        context.registerReceiver(motionTest, IntentFilter("com.firesky.launcher.MOTION"), android.Manifest.permission.DUMP, h)
     }
 
     /** Only the idle screen has the chip to itself, so only it moves. */
@@ -912,6 +1087,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         if (!ready || on == idle) return@post
         idle = on
         if (on) {
+            stopAmbient()
             idleS = 0f
             balloonOut = Balloon.morning(Calendar.getInstance(), minuteNow(), sun, shownKind(), cloud, windTest ?: windKmh)
             flow.startDrift()
@@ -920,6 +1096,8 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
             painter.balloon[3] = 0f
             // Leave from the frame on screen, so nothing jumps.
             painter.still(flow, cur, clock(), lateNow())
+            shownAmbient = false
+            lastPoke = SystemClock.uptimeMillis()
             flow.stopDrift()
             fade = -1f
             scene(FADE_S)
@@ -932,6 +1110,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         val m = minuteNow()
         val old = if (Sky.isNight(m, sun)) sun.set.toFloat() else sun.rise - 120f
         val s = flow.shape; val t = flow.tint
+        stopAmbient(); shownAmbient = false
         flow.target(null, null)
         flow.snap(old, sun)
         painter.still(flow, cur, clock(), lateNow())
@@ -943,11 +1122,11 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         scene(DAWN_FADE_S)
     }
 
-    fun pause() = h.post { active = false; animating = false; sparkling = false }
+    fun pause() = h.post { active = false; animating = false; sparkling = false; stopAmbient() }
 
     fun resume() {
         waiting = true
-        h.post { active = true; dirty = true; animating = false; wakeLoop() }
+        h.post { active = true; dirty = true; animating = false; lastPoke = SystemClock.uptimeMillis(); wakeLoop(); maybeAmbient() }
     }
 
     /** The backdrop as it is now, on its own. */
@@ -959,11 +1138,22 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         runCatching { context.unregisterReceiver(test) }
+        runCatching { context.unregisterReceiver(motionTest) }
         h.post { thread.quitSafely() }
     }
 
     private companion object {
         const val FADE_S = .45f
+        /** The very first picture: how long it waits for the selected tile, and how slowly it fades in. */
+        const val FIRST_WAIT_MS = 700L
+        const val FIRST_FADE_S = 1.2f
+        /**
+         * The home screen's motion: how long after a key it starts, and how smoothly. Measured on a Fire TV
+         * (Mali-G52): a full-size frame of water takes the chip about 108 ms, a half-size one 31 ms. Moving
+         * while you browse doubled the slow frames of the tiles, so it waits for a pause.
+         */
+        const val AMBIENT_AFTER_MS = 3_000L
+        const val AMBIENT_FPS = 12
         const val SLOW_FADE_S = 1.5f
         const val DAWN_FADE_S = 1.6f
         const val REFRESH_MS = 5 * 60_000L

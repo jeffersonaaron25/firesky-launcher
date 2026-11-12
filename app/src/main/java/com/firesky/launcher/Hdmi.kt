@@ -23,7 +23,8 @@ object Hdmi {
         tim.tvInputList.mapNotNull { info ->
             val port = CEC_ID.find(info.id)?.groupValues?.get(1)?.toInt() ?: return@mapNotNull null
             val name = info.loadLabel(ctx).toString()
-            val on = if (name.contains("PlayStation", ignoreCase = true)) Ps5.isOn() else true
+            // With its tile turned off, a PlayStation isn't asked whether it's on.
+            val on = if (name.contains("PlayStation", ignoreCase = true)) !Prefs.ps5Off && Ps5.isOn() else true
             Dev(name, port, on)
         }.distinctBy { it.port }
     }.onFailure { Log.w("FireSkyHdmi", "input list failed", it) }.getOrDefault(emptyList())

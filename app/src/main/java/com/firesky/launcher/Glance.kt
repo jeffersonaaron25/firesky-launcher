@@ -119,6 +119,9 @@ object Playing {
             }
             else -> if (now?.pkg == pkg) null else return
         }
+        // How far it got, for picks: where the last report left it, then where this one is.
+        now?.takeIf { it.pkg == pkg }?.let { w -> Taste.playing(w.pkg, w.title, w.positionAt(), w.durationMs) }
+        n?.let { Taste.playing(it.pkg, it.title, it.positionMs, it.durationMs) }
         now = n
         changed?.invoke(n)
     }

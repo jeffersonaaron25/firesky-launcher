@@ -25,7 +25,8 @@ object Kodi {
         }
     }
 
-    fun latest(ctx: Context): Item? = runCatching {
+    /** A copy of Kodi's newest video database, made again whenever Kodi's changes. */
+    private fun copy(ctx: Context): File? {
         val src = File(DIR).listFiles { f -> f.name.matches(Regex("""MyVideos\d+\.db""")) }
             ?.maxByOrNull { it.name.filter(Char::isDigit).toInt() } ?: return null
         val copy = File(ctx.cacheDir, "kodi.db")
@@ -33,6 +34,38 @@ object Kodi {
             src.copyTo(copy, overwrite = true)
             copy.setLastModified(src.lastModified())
         }
+        return copy
+    }
+
+    /** Something Kodi's library says was watched to the end: a film and how often, or a show and which episodes. */
+    class Watched(val title: String, val series: Boolean, val plays: Int, val episodes: List<String>, val at: Long)
+
+    fun watched(ctx: Context): List<Watched> = runCatching {
+        val copy = copy(ctx) ?: return emptyList()
+        SQLiteDatabase.openDatabase(copy.path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+            val out = ArrayList<Watched>()
+            db.rawQuery("SELECT m.c00, f.playCount, f.lastPlayed FROM movie m JOIN files f ON f.idFile = m.idFile WHERE f.playCount > 0", null).use { c ->
+                while (c.moveToNext()) c.getString(0)?.let { out += Watched(it, false, c.getInt(1), emptyList(), parse(c.getString(2)) ?: 0L) }
+            }
+            val shows = LinkedHashMap<String, Pair<MutableList<String>, Long>>()
+            db.rawQuery(
+                "SELECT t.c00, e.c12, e.c13, f.lastPlayed FROM episode e JOIN files f ON f.idFile = e.idFile JOIN tvshow t ON t.idShow = e.idShow WHERE f.playCount > 0",
+                null,
+            ).use { c ->
+                while (c.moveToNext()) {
+                    val name = c.getString(0) ?: continue
+                    val e = shows.getOrPut(name) { ArrayList<String>() to 0L }
+                    e.first += "${c.getString(1)}x${c.getString(2)}"
+                    shows[name] = e.first to maxOf(e.second, parse(c.getString(3)) ?: 0L)
+                }
+            }
+            shows.forEach { (name, e) -> out += Watched(name, true, 0, e.first, e.second) }
+            out
+        }
+    }.onFailure { Log.w("FireSkyKodi", "couldn't read what was watched: ${it.message}") }.getOrDefault(emptyList())
+
+    fun latest(ctx: Context): Item? = runCatching {
+        val copy = copy(ctx) ?: return null
         SQLiteDatabase.openDatabase(copy.path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
             db.rawQuery(
                 """

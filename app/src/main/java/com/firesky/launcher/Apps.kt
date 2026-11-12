@@ -39,14 +39,19 @@ object Apps {
         "com.amazon.bueller.photos",
     )
 
-    /** Hidden even though they are third-party: this app, other launchers, and Home redirects. */
+    /**
+     * Hidden even though they are third-party: this app, other launchers, Home redirects, and Fire
+     * TV's AirPlay receiver, which AirPlay and screen mirroring use without it being opened, and which
+     * Amazon only lets its own settings open.
+     */
     private val HIDE = setOf(
         BuildConfig.APPLICATION_ID,
         "com.spocky.projengmenu",
         "io.github.toolicious.homeonfire",
+        "com.apple.airplay.amazon.airplay",
     )
 
-    private fun shown(pkg: String): Boolean {
+    internal fun shown(pkg: String): Boolean {
         if (pkg in HIDE || pkg in Prefs.hide) return false
         val system = pkg.startsWith("com.amazon.") || pkg.startsWith("com.android.")
         return !system || pkg in SYSTEM_KEEP

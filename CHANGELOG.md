@@ -9,6 +9,18 @@ put on a TV between releases (1.2.1, 1.2.2), which the next release always repla
 Before tagging a release, rename **Unreleased** to its version and date, like `## 1.2.0 - 2026-11-20`.
 The release workflow publishes that section as the release notes, and stops if it has none.
 
+## 1.4.0 - 2026-11-12
+
+- Picks from what you watch, each saying why it's there
+- The row rearranges smoothly when its cards change
+- Suggestions you keep passing over step aside for a few weeks
+- Water, city lights and clouds move gently when left alone
+- Plains: wind runs through the grass and the trees sway
+- A smoother start: placeholders, and no flash of other colours
+- PlayStation tile can be turned off: hold OK on it, or in settings
+- No AirPlay tile: AirPlay and mirroring work without it
+- Netflix's Continue card no longer sticks on an old episode
+
 ## 1.3.0 - 2026-11-11
 
 - Pick the land under the sky: mountains, water, city and more

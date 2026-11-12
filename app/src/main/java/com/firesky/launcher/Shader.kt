@@ -241,6 +241,9 @@ uniform float uRipple;
 // The light the water catches: where the moon or a low sun is (x, y) and how strongly (z), and its colour.
 uniform vec3 uLight;
 uniform vec3 uLightC;
+// The plains: how much the wind shows on the grass (0 elsewhere), and how far the trees lean with it.
+uniform float uGrass;
+uniform float uSway;
 
 const float W = 1280.0;
 const float H = 720.0;
@@ -262,12 +265,32 @@ int column(float x) {
 
 float heightAt(float x, int i) {
     if (uPlace == 0) return ridgeAt(x, float(i));
+    // On the plains the trees lean with the wind and sway, each a little in its own time. The hill
+    // they stand on moves too, by a pixel or two, which on a rise that gentle doesn't show. Every 4
+    // seconds and every minute, so it comes round with the water's hour.
+    if (i == 2 && uSway != 0.0) x += uSway * (0.45 + 0.55 * sin(uWave * 1.5707963 + x * 0.021)) * (0.6 + 0.4 * sin(uWave * 0.10471976 + x * 0.0043));
     return texture(uLand, vec2(((x + uPan) / W * 1280.0 + 0.5) / 1281.0, (float(i) + 0.5) / 4.0)).r;
+}
+
+/**
+ * Wind over the fields: soft bands of light running across the grass the way the wind blows, faster
+ * on the nearer fields. They ride the clouds' own drift, so they keep the wind's speed and direction
+ * and come round with it seamlessly.
+ */
+vec3 grass(vec3 c, vec2 p, int i) {
+    float x = p.x + uPan;
+    float near = float(i - 1) / 2.0;
+    float a = texture(uCloud, vec2(x / (620.0 + 520.0 * near) + uDrift * 0.033, (p.y - 250.0) / 260.0)).a;
+    float b = texture(uCloud, vec2(x / 380.0 + uDrift * 0.051 + 0.41, (p.y - 230.0) / 200.0)).a;
+    // The cloud texture is faint, soft blobs at a tenth or so: scaled up to whole gusts.
+    float g = smoothstep(0.06, 0.4, a * 0.75 + b * 0.45);
+    return c * (1.0 + 0.38 * uGrass * g);
 }
 
 /** Layer i's own colour at p, with lit windows where it has buildings. */
 vec3 layerAt(int i, vec2 p, float base) {
     vec3 c = uLay[i];
+    if (uGrass > 0.0 && i > 0) c = grass(c, p, i);
     if (uPlace == 0 || uWin[i] < 0.5 || uLit <= 0.001 || p.y > base - 5.0) return c;
     int x = column(p.x);
     vec4 here = texelFetch(uLand, ivec2(x, i), 0);

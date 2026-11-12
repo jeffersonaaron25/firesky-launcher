@@ -307,7 +307,7 @@ class HomeScreenTest {
     @Test fun fireSkySettingsOpenFromTheSettingsTileAndChangeThings() {
         Prefs.init(RuntimeEnvironment.getApplication())
         // From Auto, whatever this build's own defaults are.
-        Prefs.set(Prefs.TEMPERATURE, ""); Prefs.set(Prefs.CLOCK, ""); Prefs.set(Prefs.PLACE, "")
+        Prefs.set(Prefs.TEMPERATURE, ""); Prefs.set(Prefs.CLOCK, ""); Prefs.set(Prefs.PLACE, ""); Prefs.set(Prefs.MOTION, "")
         try {
             s.openMenu(s.dock().first { it.dockId == "settings" })
             assertEquals(MenuAct.FIRESKY, s.menu!!.items.first())
@@ -319,6 +319,11 @@ class HomeScreenTest {
             assertEquals(listOf(Prefs.PLACE), changed)
             press(Key.DirectionLeft)
             assertEquals("", Prefs.chosen(Prefs.PLACE))
+            // Then the home screen's motion, on until turned off.
+            press(Key.DirectionDown); press(Key.DirectionRight)
+            assertFalse(Prefs.motion)
+            press(Key.DirectionLeft)
+            assertTrue(Prefs.motion)
             // Then the temperature: Auto, then °C.
             press(Key.DirectionDown); press(Key.DirectionRight)
             assertEquals("celsius", Prefs.chosen(Prefs.TEMPERATURE))

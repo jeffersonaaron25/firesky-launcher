@@ -53,6 +53,10 @@ object Prefs {
     /** The land under the sky: "" for mountains, a place from [Places.KINDS], or shuffled by app ("shuffle") or by day ("daily"). */
     const val PLACE = "place"
 
+    /** The home screen moving gently when left alone: "" for on, "off". */
+    const val MOTION = "motion"
+    val motion get() = chosen(MOTION) != "off"
+
     /** The day's brief on the first wake: "" for on, "off". */
     const val BRIEF = "brief"
     val brief get() = chosen(BRIEF) != "off"
@@ -125,6 +129,9 @@ object Prefs {
 
     /** The HDMI port for a PlayStation tile that's always in the dock, or 0 to show one only when it's plugged in. */
     val ps5Port get() = chosen(PS5).toIntOrNull() ?: 0
+
+    /** No PlayStation tile or card at all, even with one plugged in. */
+    val ps5Off get() = chosen(PS5) == "off"
 
     /** The TMDB key that turns on New and Trending: added from a phone, or a build's own. */
     val tmdbKey get() = (store?.getString(TMDB, null) ?: BuildConfig.TMDB_KEY).trim()

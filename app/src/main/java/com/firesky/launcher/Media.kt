@@ -99,6 +99,7 @@ class MediaListener : NotificationListenerService() {
     private var wakeOn = false
 
     override fun onListenerConnected() {
+        Taste.init(this)
         Stopped.watch(this)
         if (!wakeOn) { registerReceiver(wake, IntentFilter(Intent.ACTION_SCREEN_ON).apply { priority = IntentFilter.SYSTEM_HIGH_PRIORITY - 1 }); wakeOn = true }
         val m = getSystemService(MediaSessionManager::class.java) ?: return

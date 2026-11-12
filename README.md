@@ -15,7 +15,7 @@
 
 FireSky replaces the Fire TV home screen with a quiet one: your apps, what you were watching, what's new on the services you use, and the weather. Behind it is the real sky over your home: the stars, moon and planets where they actually are, the space station passing overhead, meteor showers, the northern lights during strong storms, live clouds moving with the wind, and lightning when there's a thunderstorm.
 
-No ads, no sponsored rows, no account. It learns your habits on the TV and sends nothing about you anywhere.
+No ads, no sponsored rows, no account. It learns your habits on the TV and keeps them there.
 
 > [!NOTE]
 > **Vibe coded with Claude.** FireSky was built in conversation with [Claude Code](https://claude.com/claude-code) and tested on a real Fire TV.
@@ -45,11 +45,12 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and sends
 - **Continue watching** from Netflix, Kodi or any app that reports playback, with the time it would end.
 - **Usually now:** the app you tend to open at this hour, learned on the TV.
 - **New on your apps:** new and trending films and shows on the services you have installed, plus new episodes and seasons of what you watch. Optional; needs a free TMDB key.
+- **Picks from what you watch:** as FireSky sees what you finish, watch again or give up on, the rest of the row fills with picks that each say why: the next film in a series you've started, the same director or cinematographer, one for the weather, and a wild card each week. A suggestion you pass over three days running steps aside for a few weeks. What you've watched stays on the TV: FireSky looks each title up on TMDB by name, and sends nothing else.
 - **Title pages:** the plot, year, rating, running time, genres, cast and TMDB score for a title, with buttons to play it or watch its trailer in YouTube.
 - **Weather:** now, the next 12 hours and the week, with a heads-up when rain is coming. Also wind and gusts, humidity, UV, air quality, the length of the day (or the moon's phase at night), and what's worth looking for in tonight's sky: planets, the space station, meteors, the northern lights. Select the temperature in the top corner. No API key needed.
 - **Your dock, your order.** Pick the apps and their order; it never rearranges itself. Amazon's built-in extras stay out of the way.
 - **Instant Home.** The Home button and waking the TV land on FireSky, not Amazon's home screen.
-- **PlayStation tile** that shows whether the console is on and switches to its input (TVs with Fire TV built in).
+- **PlayStation tile**, only when one is plugged in, that shows whether the console is on and switches to its input (TVs with Fire TV built in). Hold OK on it to turn it off.
 - **While you watch:** hold **≡** in any app for the time, the weather and your apps. A clock shows when you pause, and a quiet note when the space station is about to pass over or rain is near.
 - **Morning brief:** the first time the TV wakes each day, the date, the weather, the light and tonight's sky for a few seconds. Any key skips it.
 - **Idle mode:** after three minutes untouched, only the sky and the clock remain, with lightning in a thunderstorm, a hot-air balloon on some calm mornings, and fireworks at New Year.
@@ -142,7 +143,7 @@ FireSky's settings are on the TV: hold **OK** on the **Settings** tile (or press
 | Place | The land under the sky: Mountains, Water, City, Plains or Islands; or shuffled, each app its own or a new one each day |
 | Temperature, Wind, Clock | °C or °F, mph or km/h, 12 or 24-hour. Auto follows the TV |
 | Streaming country | Where your subscriptions are, for New and Trending. Auto follows the TV |
-| PlayStation tile | Always in the dock on a given HDMI port, or only when a PlayStation is on |
+| PlayStation tile | Only when the TV sees a PlayStation, always in the dock on a given HDMI port, or off |
 | While you watch | The glance when you hold **≡** in another app, the pause clock and the notes. Can be just the glance, or off |
 | New and Trending | Scan the QR code with your phone and paste a free TMDB key there. No typing on the remote |
 | Morning brief | On or off: the day's brief on the first wake |
@@ -216,14 +217,14 @@ FireSky has no account, no analytics and no server. Everything it learns about y
 |---|---|
 | [GeoJS](https://www.geojs.io) or [ipwho.is](https://ipwho.is) | Your approximate location from your IP address, once a week. Only the city-level result is kept. |
 | [Open-Meteo](https://open-meteo.com) | Weather and air quality for that location |
-| [TMDB](https://www.themoviedb.org) and [Wikidata](https://www.wikidata.org) | Titles, artwork and links to them in your apps (with your own TMDB key). Nothing about what you watch is sent. |
+| [TMDB](https://www.themoviedb.org) and [Wikidata](https://www.wikidata.org) | Titles, artwork and links to them in your apps (with your own TMDB key). For picks, titles you've watched are looked up by name; nothing else about your viewing is sent. |
 | [NOAA SWPC](https://www.swpc.noaa.gov) | Northern lights forecast |
 | [CelesTrak](https://celestrak.org) | The space station's orbit |
 | [GitHub](https://github.com/jeffersonaaron25/firesky-launcher/releases) | New releases of FireSky |
 
 When you add a TMDB key from your phone, the TV serves the page itself, on your home network only, and only while the QR code is on screen.
 
-The setup grants these permissions over ADB. None of the data leaves the TV.
+The setup grants these permissions over ADB. What they read stays on the TV, except the names of titles, which are looked up on TMDB.
 
 | Permission | Why |
 |---|---|

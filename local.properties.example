@@ -20,7 +20,7 @@ tmdb.key=
 # Common ones: Netflix com.netflix.ninja, Prime Video com.amazon.firebat, YouTube
 # com.amazon.firetv.youtube, Disney+ com.disney.disneyplus, Max com.hbo.hbonow, Hulu com.hulu.plus,
 # Apple TV com.apple.atve.amazon.appletv, Paramount+ com.cbs.ott, Plex com.plexapp.android,
-# Kodi org.xbmc.kodi, AirPlay com.apple.airplay.amazon.airplay
+# Kodi org.xbmc.kodi
 dock=
 
 # Apps to keep out of sight altogether, by package name, separated by commas.
