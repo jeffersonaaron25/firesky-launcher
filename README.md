@@ -59,8 +59,8 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and keeps
 
 | | |
 |---|---|
-| ![Daytime home screen](docs/screenshots/home-day.jpg) | ![A new film on one of your apps](docs/screenshots/new-on-your-apps.jpg) |
-| The app you usually open at this hour comes first | New and trending on your services |
+| ![A pick, saying why it's there](docs/screenshots/home-day.jpg) | ![A new film on one of your apps](docs/screenshots/new-on-your-apps.jpg) |
+| Picks from what you watch, each saying why | New and trending on your services |
 | ![The weather panel](docs/screenshots/weather.jpg) | ![All apps](docs/screenshots/all-apps.jpg) |
 | Weather, from the temperature in the corner | All apps, without the clutter |
 | ![The space station crossing the sky](docs/screenshots/space-station.jpg) | ![The northern lights during a strong storm](docs/screenshots/northern-lights.jpg) |
