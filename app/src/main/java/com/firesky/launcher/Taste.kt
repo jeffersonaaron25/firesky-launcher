@@ -11,7 +11,8 @@ import java.util.concurrent.Executors
  * What's been watched on this TV, kept for good: how far each title got, whether it was finished or
  * watched again, and for a show how many episodes. Nothing is asked of you. It comes from Netflix's
  * continue-watching list, which FireSky already reads, and from the name and length other apps give
- * while they play. It stays on the TV; only a title's name is looked up, on TMDB.
+ * while they play, plus anything you say you've seen elsewhere. It stays on the TV; only a title's
+ * name is looked up, on TMDB.
  */
 object Taste {
     private const val TAG = "FireSkyTaste"
@@ -29,7 +30,8 @@ object Taste {
     /** Only these apps play the films and shows TMDB knows. */
     val VIDEO = setOf("com.netflix.ninja", "com.amazon.firebat", "com.amazon.avod", "com.hulu.plus", "com.hbo.hbonow", "com.apple.atve.amazon.appletv", "com.disney.disneyplus", "com.peacocktv.peacockandroid", "com.cbs.ott", "com.plexapp.android", "org.xbmc.kodi")
 
-    enum class Verdict(val weight: Float) { TWICE(2f), FINISHED(1f), WATCHING(0f), LEFT(-1f) }
+    /** How a title went. Liked and Didn't like are your word for one seen somewhere else. */
+    enum class Verdict(val weight: Float) { TWICE(2f), FINISHED(1f), LIKED(1f), WATCHING(0f), LEFT(-1f), DISLIKED(-1f) }
 
     class Seen(
         val title: String,
@@ -49,12 +51,20 @@ object Taste {
         var key: String? = null,
         /** When it was last watched to the end, for a film. */
         var endAt: Long = 0,
+        /** Seen somewhere else, by your word: 1 liked it, -1 didn't. Your word outweighs what the TV saw. */
+        var said: Int = 0,
     ) {
         val id get() = "${if (series) "t" else "m"}|${Facts.norm(title)}"
     }
 
     /** How a title went, from what was seen of it. */
     fun verdict(s: Seen, now: Long): Verdict {
+        if (s.said < 0) return Verdict.DISLIKED
+        if (s.said > 0) return if (seenVerdict(s, now) == Verdict.TWICE) Verdict.TWICE else Verdict.LIKED
+        return seenVerdict(s, now)
+    }
+
+    private fun seenVerdict(s: Seen, now: Long): Verdict {
         val stale = now - s.lastAt > LEFT_MS
         return if (s.series) when {
             s.episodes.size >= 10 -> Verdict.TWICE
@@ -181,6 +191,33 @@ object Taste {
         if (changed) save(c)
     }
 
+    /**
+     * You've seen [key] somewhere else: in a cinema, on another TV, before FireSky. [liked] says how it
+     * went. It counts as watched from now on, so it isn't offered again and what it shares counts.
+     */
+    fun say(key: String, title: String, pkg: String, liked: Boolean) {
+        val c = app ?: return
+        val now = System.currentTimeMillis()
+        io.execute {
+            runCatching {
+                synchronized(this) {
+                    val series = key.startsWith("title:t")
+                    val id = "${if (series) "t" else "m"}|${Facts.norm(title)}"
+                    val s = load(c).getOrPut(id) { Seen(title, series, pkg, 0f, 0f, 0, HashSet(), now, now) }
+                    s.key = key
+                    s.said = if (liked) 1 else -1
+                    s.lastAt = maxOf(s.lastAt, now)
+                }
+                save(c)
+                Log.i(TAG, "seen elsewhere, ${if (liked) "liked" else "not liked"}")
+            }.onFailure { Log.w(TAG, "couldn't keep that", it) }
+        }
+    }
+
+    /** The titles you've said you've seen, by key: they're not offered again. */
+    @Synchronized
+    fun said(c: Context): Set<String> = load(c).values.filter { it.said != 0 }.mapNotNullTo(HashSet()) { it.key }
+
     /** What an app says is playing: kept when it's a film or an episode of something, not a clip. */
     fun playing(pkg: String, title: String?, positionMs: Long, durationMs: Long) {
         val c = app ?: return
@@ -198,7 +235,7 @@ object Taste {
 
     private fun toJson(s: Seen) = JSONObject()
         .put("t", s.title).put("tv", s.series).put("p", s.pkg).put("max", s.max.toDouble()).put("last", s.last.toDouble())
-        .put("ends", s.ends).put("eps", JSONArray(s.episodes.toList())).put("first", s.firstAt).put("at", s.lastAt).put("k", s.key).put("end", s.endAt)
+        .put("ends", s.ends).put("eps", JSONArray(s.episodes.toList())).put("first", s.firstAt).put("at", s.lastAt).put("k", s.key).put("end", s.endAt).put("said", s.said)
 
     private fun fromJson(o: JSONObject): Seen {
         val e = o.optJSONArray("eps") ?: JSONArray()
@@ -207,6 +244,7 @@ object Taste {
             o.optInt("ends"), HashSet(List(e.length()) { e.getString(it) }), o.optLong("first"), o.optLong("at"),
             if (o.has("k") && !o.isNull("k")) o.optString("k") else null,
             o.optLong("end"),
+            o.optInt("said"),
         )
     }
 }

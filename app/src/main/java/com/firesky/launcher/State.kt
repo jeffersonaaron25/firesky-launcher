@@ -48,7 +48,8 @@ data class Card(
 
 enum class MenuAct(val label: String) {
     MOVE("Move"), HIDE("Hide"), HIDE_CARD("Hide this"), RESET("Reset the dock"), AMAZON("Amazon home"), FIRESKY("FireSky settings"),
-    ADD_DOCK("Add to dock"), UNDOCK("Remove from dock"), HIDE_APP("Hide from All apps"), DETAILS("Details")
+    ADD_DOCK("Add to dock"), UNDOCK("Remove from dock"), HIDE_APP("Hide from All apps"), DETAILS("Details"),
+    NOT_INTERESTED("Not interested"), LIKED("Seen it · liked it"), DISLIKED("Seen it · didn't like it")
 }
 
 class TileMenu(val card: Card, val items: List<MenuAct>)
@@ -75,7 +76,17 @@ class HomeState {
     var shows by mutableStateOf<Map<String, Shows.Info>>(emptyMap())
     var hdmi by mutableStateOf<List<Hdmi.Dev>>(emptyList())
     var wx by mutableStateOf<Weather.Wx?>(null)
-    var idle by mutableStateOf(false)
+    private var idleNow by mutableStateOf(false)
+    /** The idle screen is up. */
+    var idle: Boolean
+        get() = idleNow
+        set(v) { if (idleNow && !v) idleEnded = SystemClock.uptimeMillis(); idleNow = v }
+    /** When the idle screen last gave way to the home screen, which takes a second to come back. */
+    private var idleEnded = 0L
+    /** Called just before the idle screen comes up, while the home screen is still all there. */
+    var beforeIdle: (() -> Unit)? = null
+    /** Music playing on the TV: the idle screen shows it and takes its colours. */
+    var music by mutableStateOf<Music.Track?>(null)
     var allApps by mutableStateOf(false)
     var toast by mutableStateOf<String?>(null)
     var homeTick by mutableIntStateOf(0)
@@ -161,6 +172,10 @@ class HomeState {
     var order by mutableStateOf<List<String>>(emptyList())
     var hidden by mutableStateOf<Set<String>>(emptySet())
     var hiddenCards by mutableStateOf<Set<String>>(emptySet())
+    /** Titles you've said you've seen elsewhere: never offered again. */
+    var saidCards by mutableStateOf<Set<String>>(emptySet())
+    /** Learns the picks again soon, after you've said what you think of one. */
+    var relearn: () -> Unit = {}
     /** Apps you added to the dock from All apps, and apps you hid from All apps altogether. */
     var added by mutableStateOf<Set<String>>(emptySet())
     var hiddenApps by mutableStateOf<Set<String>>(emptySet())
@@ -203,6 +218,24 @@ class HomeState {
 
     fun appCard(a: AppEntry) = Card("a-${a.pkg}", Kind.APP, a.pkg, "", a.label, Fmt.used(lastUsed[a.pkg]), a.hue, dockId = a.pkg)
 
+    /** The card for the music playing, if any. */
+    fun musicCard(): Card? = music?.let { t ->
+        app(t.pkg)?.let { a -> Card(MUSIC_CARD, Kind.RESUME, a.pkg, "Now playing", t.title, t.artist.ifEmpty { a.label }, Color(t.colours[0]), sub = a.label) }
+    }
+
+    /** The music on its own, as the idle screen shows it, straight away: from its card. */
+    fun listen() = goIdle()
+
+    fun goIdle() {
+        if (idle) return
+        beforeIdle?.invoke()
+        idle = true
+        brief = null
+    }
+
+    /** The idle screen is up, or the home screen is still coming back from it. */
+    fun nearIdle(now: Long = SystemClock.uptimeMillis()) = idle || now - idleEnded < IDLE_LEAVE_MS
+
     fun wxCard(): Card? = wx?.let { w ->
         Card("wx", Kind.WEATHER, null, "Now", w.condition, "Feels ${w.feels}° · Wind ${w.wind} ${Prefs.windUnit}", SKY)
     }
@@ -218,6 +251,8 @@ class HomeState {
             out += if (it.notes.isEmpty()) Card("t-update", Kind.UPDATE, null, "Update", "FireSky ${it.version}", "Ready to install · OK to update", SKY)
             else Card("t-update", Kind.UPDATE, null, "Update · OK to install", "FireSky ${it.version}", "", SKY, notes = it.notes)
         }
+        // Music playing on the TV comes first: its cover, the song and who it's by. OK shows it on its own.
+        musicCard()?.let { out += it }
         ps5?.takeIf { it.on && !Prefs.ps5Off && "ps5" !in hidden }?.let {
             out += Card("t-ps5", Kind.PS5, null, "HDMI ${it.port}", it.name, "On", PS5_HUE, on = true, port = it.port)
         }
@@ -271,6 +306,7 @@ class HomeState {
         val room = (MAX_CARDS - mine.size).coerceAtLeast(0)
         // Picks from what you watch fill the room first, each with its reason; the day's New and
         // Trending fill whatever is left, as before anything has been learned.
+        val gone = hiddenCards + saidCards
         val skip = skipCards()
         val chosen = pool?.let { p -> Picks.row(p, sky(), room, skip, { app(it.pkg) != null && "t-${it.key}" in thumbs }, week()) }.orEmpty()
         val picked = chosen.map { p ->
@@ -281,9 +317,9 @@ class HomeState {
         val usable = titles.filter { app(it.pkg) != null && "t-${it.key}" in thumbs && it.key !in taken }
         var feed = Tmdb.pick(usable, useMinutes, skip, room - picked.size)
         // Resting cards come back before the row goes short: stepping aside is for making way.
-        if (picked.size + feed.size < room && skip.size > hiddenCards.size) {
+        if (picked.size + feed.size < room && skip.size > gone.size) {
             val have = feed.mapTo(HashSet()) { it.key }
-            feed = feed + Tmdb.pick(usable.filter { it.key !in have }, useMinutes, hiddenCards, room - picked.size - feed.size)
+            feed = feed + Tmdb.pick(usable.filter { it.key !in have }, useMinutes, gone, room - picked.size - feed.size)
         }
         return mine + picked + feed.map { t ->
             val a = app(t.pkg)!!
@@ -291,8 +327,8 @@ class HomeState {
         }
     }
 
-    /** Title cards left out of the row: the ones you hid, and the ones resting after being passed over. */
-    fun skipCards(): Set<String> = hiddenCards + Passed.resting()
+    /** Title cards left out of the row: the ones you hid or have seen, and the ones resting after being passed over. */
+    fun skipCards(): Set<String> = hiddenCards + saidCards + Passed.resting()
 
     /**
      * The title cards in view while the home screen is in use, so the ones you keep passing over
@@ -351,6 +387,9 @@ class HomeState {
             c.dockId == "settings" -> listOf(MenuAct.FIRESKY, MenuAct.MOVE, MenuAct.AMAZON)
             c.dockId == "all" -> listOf(MenuAct.MOVE)
             c.dockId != null -> listOf(MenuAct.MOVE, MenuAct.HIDE)
+            // A title FireSky offered: say what you think of it, and the picks learn from that.
+            c.hideId?.startsWith("title:") == true ->
+                listOfNotNull(MenuAct.NOT_INTERESTED, MenuAct.LIKED, MenuAct.DISLIKED, MenuAct.DETAILS.takeIf { detailOf(c) != null })
             c.hideId != null -> listOfNotNull(MenuAct.HIDE_CARD, MenuAct.DETAILS.takeIf { detailOf(c) != null })
             else -> return
         } + if (c.dockId != null && edited && !c.key.startsWith("all-")) listOf(MenuAct.RESET) else emptyList()
@@ -375,8 +414,29 @@ class HomeState {
         // The PlayStation isn't an app, so it can't go to All apps: it's turned off in the settings instead.
         if (id == "ps5") { Prefs.set(Prefs.PS5, "off"); settingsTick++; toast = "PlayStation tile off. FireSky settings can bring it back" }
         else if (id != null) { hidden = hidden + id; layout?.hidden = hidden; toast = "${c.title} moved to All apps" }
-        else c.hideId?.let { hiddenCards = hiddenCards + it; layout?.cards = hiddenCards; toast = "${c.title} hidden" }
+        else c.hideId?.let {
+            hiddenCards = hiddenCards + it; layout?.cards = hiddenCards
+            // A title counts against what it shares, so the picks are learned again.
+            if (it.startsWith("title:")) { toast = "Not interested in ${c.title}"; relearn() } else toast = "${c.title} hidden"
+        }
         focus(next)
+    }
+
+    /** Where the selection goes when [c] leaves its row: the next card along, or the one before. */
+    fun after(c: Card): String? {
+        val row = if (c.dockId != null) dock() else tonight()
+        val i = row.indexOfFirst { it.key == c.key }
+        return (row.getOrNull(i + 1) ?: row.getOrNull(i - 1) ?: dock().firstOrNull())?.key
+    }
+
+    /** You've seen [c]'s title somewhere else, and [liked] it or not. It leaves the row and the picks learn from it. */
+    fun seenIt(c: Card, liked: Boolean, next: String?) {
+        val key = c.hideId?.takeIf { it.startsWith("title:") } ?: return
+        Taste.say(key, c.title, c.pkg.orEmpty(), liked)
+        saidCards = saidCards + key
+        toast = if (liked) "Noted: you liked ${c.title}" else "Noted: ${c.title} wasn't for you"
+        focus(next)
+        relearn()
     }
 
     fun resetDock() {
@@ -398,6 +458,9 @@ class HomeState {
         allApps = false
         idle = false
         panel = false
+        // FireSky's own settings and its setup guide too: Home always means the home screen.
+        settings = false
+        guide = false
         detail = null
         menu = null
         moving = null
@@ -436,6 +499,8 @@ class HomeState {
     }
 
     companion object {
+        /** The card for the music playing, whose picture is drawn for each song. */
+        const val MUSIC_CARD = "t-music"
         const val MAX_CARDS = 8
         /** Cards of the row in view before it moves along. */
         const val IN_VIEW = 5
@@ -444,6 +509,8 @@ class HomeState {
         /** However long the first load takes, the placeholders go after this. */
         const val LOADING_MAX_MS = 10_000L
         const val IDLE_MS = 180_000L
+        /** How long the home screen takes to come back from the idle screen. */
+        const val IDLE_LEAVE_MS = 1_500L
         const val OPENING_MS = 3000L
         const val CAUGHT_UP_MS = 3_600_000L
     }

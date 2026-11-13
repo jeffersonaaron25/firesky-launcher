@@ -257,7 +257,8 @@ class HomeKey : AccessibilityService() {
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.OPAQUE,
+            // See-through as it fades, so the home screen shows through it: an opaque window fades to black.
+            PixelFormat.TRANSLUCENT,
         ).apply { gravity = Gravity.TOP or Gravity.START }
         // A stand-in without the tiles on it gives way slowly, so the home screen fades in over it.
         slowLift = pic != null && pic !== Backdrop.home

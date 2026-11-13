@@ -9,6 +9,27 @@ put on a TV between releases (1.2.1, 1.2.2), which the next release always repla
 Before tagging a release, rename **Unreleased** to its version and date, like `## 1.2.0 - 2026-11-20`.
 The release workflow publishes that section as the release notes, and stops if it has none.
 
+## 1.5.0 - 2026-11-13
+
+- Music playing? A Now playing card; OK shows it full screen
+- New places: a desert of dunes and a forest, and space on its own
+- Title pages: the title's own logo, in the place it's set
+- A brief in the morning and the evening, there until you're done
+- Shuffled, each app gets a new place every morning
+- The sky stays put as you switch apps: one horizon for every place
+- The view holds still, no longer turning to follow the station
+- Lakes before the plains and forest; every city on its river
+- Now and then: birds at dusk, a kite, a sailboat, a lit train
+- A softer glow, a low sun's streak, and smooth dusk gradients
+- The home screen moves more sharply, and fades into motion
+- Seen a pick elsewhere? Say so, and whether you liked it
+- Not interested, in place of Hide, and picks learn from it
+- No screensaver while music plays on the home screen
+- Pressing Home no longer flashes black for a moment
+- Home from FireSky's settings goes home, as Back does
+- The selected card keeps its rounded corners as the screen fades
+- The Milky Way only in space, and where it really is
+
 ## 1.4.0 - 2026-11-12
 
 - Picks from what you watch, each saying why it's there

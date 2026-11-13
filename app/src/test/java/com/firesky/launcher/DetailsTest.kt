@@ -33,7 +33,14 @@ class DetailsTest {
           {"iso_3166_1":"GB","release_dates":[{"certification":"12A","type":3}]},
           {"iso_3166_1":"FR","release_dates":[{"certification":"","type":3}]}]},
         "credits":{"cast":[{"name":"Ada Reyes"},{"name":"Tom Okafor"},{"name":"Mina Sato"},{"name":"Fourth Name"}],
-          "crew":[{"name":"Someone Else","job":"Producer"},{"name":"Lena Marsh","job":"Director"}]}}""",
+          "crew":[{"name":"Someone Else","job":"Producer"},{"name":"Lena Marsh","job":"Director"}]},
+        "keywords":{"keywords":[{"id":1,"name":"lighthouse"},{"id":2,"name":"radio"},{"id":3,"name":"sea"}]},
+        "images":{"logos":[
+          {"file_path":"/fr.png","iso_639_1":"fr","vote_average":9.0},
+          {"file_path":"/en-low.png","iso_639_1":"en","vote_average":3.2},
+          {"file_path":"/en-best.png","iso_639_1":"en","vote_average":5.4},
+          {"file_path":"/en-drawn.svg","iso_639_1":"en","vote_average":8.0},
+          {"file_path":"/plain.png","iso_639_1":null,"vote_average":7.0}]}}""",
     )
 
     private val show = JSONObject(
@@ -111,6 +118,19 @@ class DetailsTest {
         assertEquals("teaser", Details.trailer(only, "en-US"))
     }
 
+    @Test fun readsWhereItsSetAndItsLettering() {
+        val i = Details.parse(film, true, "US", "en-US")
+        assertEquals(listOf("lighthouse", "radio", "sea"), i.keywords)
+        // English before wordless, the best liked of them, and never a drawing the TV can't show.
+        assertEquals("/en-best.png", i.logo)
+        assertEquals("/fr.png", Details.parse(film, true, "FR", "fr-FR").logo)
+        assertEquals("/plain.png", Details.logo(film.getJSONObject("images").getJSONArray("logos").let { a ->
+            org.json.JSONArray((0 until a.length()).map { a.getJSONObject(it) }.filter { it.optString("iso_639_1") !in setOf("en", "fr") })
+        }, "en-US"))
+        assertNull(Details.parse(show, false, "US", "en-US").logo)
+        assertEquals(Places.WATER, Places.story(i.keywords))
+    }
+
     @Test fun whatsFetchedIsKeptForNextTime() {
         assertNull(Details.cached(ctx, "title:m77"))
         Details.keep(ctx, Details.parse(film, true, "US", "en-US"))
@@ -120,6 +140,8 @@ class DetailsTest {
         assertEquals(listOf("Drama", "Mystery"), i.genres)
         assertEquals("final", i.trailer)
         assertEquals(148, i.minutes)
+        assertEquals(listOf("lighthouse", "radio", "sea"), i.keywords)
+        assertEquals("/en-best.png", i.logo)
         assertNull(Details.cached(ctx, "title:t12")!!.trailer)
         Details.forget(ctx)
         assertNull(Details.cached(ctx, "title:m77"))
@@ -130,8 +152,10 @@ class DetailsTest {
     @Test fun thePageOffersOnlyWhatItCanDo() {
         val withTrailer = Details.parse(film, true, "US", "en-US")
         val without = Details.parse(show, false, "US", "en-US")
-        assertEquals(listOf(DetailAct.PLAY, DetailAct.TRAILER, DetailAct.HIDE), Detail.acts(card("title:m77"), withTrailer, youtube = true))
-        assertEquals(listOf(DetailAct.PLAY, DetailAct.HIDE), Detail.acts(card("title:m77"), withTrailer, youtube = false))
+        assertEquals(listOf(DetailAct.PLAY, DetailAct.TRAILER, DetailAct.LIKED, DetailAct.DISLIKED, DetailAct.HIDE), Detail.acts(card("title:m77"), withTrailer, youtube = true))
+        assertEquals(listOf(DetailAct.PLAY, DetailAct.LIKED, DetailAct.DISLIKED, DetailAct.HIDE), Detail.acts(card("title:m77"), withTrailer, youtube = false))
+        // A card that isn't a title FireSky offered can only be hidden.
+        assertEquals(listOf(DetailAct.PLAY, DetailAct.HIDE), Detail.acts(card("watch:x:1"), without, youtube = true))
         assertEquals(listOf(DetailAct.PLAY), Detail.acts(card(null), without, youtube = true))
     }
 

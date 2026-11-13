@@ -209,6 +209,9 @@ object Watching {
     /** Called on the log thread whenever the list changes. */
     @Volatile var changed: (() -> Unit)? = null
 
+    /** For pictures over adb: what you're watching is left out of the row, so it stays off screen. Kept nowhere. */
+    @Volatile var hidden = false
+
     /** Follows the log from this moment, after reading what it still holds. */
     fun watch(ctx: Context): LogTail {
         val app = ctx.applicationContext

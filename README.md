@@ -41,19 +41,20 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and keeps
 ## Features
 
 - **The real sky** for your location, computed on the TV: stars, moon and planets, space station passes, meteor showers, the northern lights, and live clouds.
-- **A place under it:** mountains, a lake or coast, a city whose windows light up after dark, plains, or islands, or shuffle them. Each app gets its own version of the place, and water reflects the real sky.
+- **A place under it:** mountains, a lake or coast, a city on its river whose windows light up after dark, plains or a forest by a lake, islands, or a sea of sand dunes; or shuffle them, each app a new one every morning. Each app gets its own version of the place, and water reflects the real sky. Or choose **space**: no ground at all, just the real stars, the Milky Way, constellations and galaxies, in the app's colour.
 - **Continue watching** from Netflix, Kodi or any app that reports playback, with the time it would end.
 - **Usually now:** the app you tend to open at this hour, learned on the TV.
 - **New on your apps:** new and trending films and shows on the services you have installed, plus new episodes and seasons of what you watch. Optional; needs a free TMDB key.
-- **Picks from what you watch:** as FireSky sees what you finish, watch again or give up on, the rest of the row fills with picks that each say why: the next film in a series you've started, the same director or cinematographer, one for the weather, and a wild card each week. A suggestion you pass over three days running steps aside for a few weeks. What you've watched stays on the TV: FireSky looks each title up on TMDB by name, and sends nothing else.
-- **Title pages:** the plot, year, rating, running time, genres, cast and TMDB score for a title, with buttons to play it or watch its trailer in YouTube.
+- **Picks from what you watch:** as FireSky sees what you finish, watch again or give up on, the rest of the row fills with picks that each say why: the next film in a series you've started, the same director or cinematographer, one for the weather, and a wild card each week. A suggestion you pass over three days running steps aside for a few weeks. Hold OK on one to say you're not interested, or that you've seen it somewhere else and whether you liked it; the picks learn from that too. What you've watched stays on the TV: FireSky looks each title up on TMDB by name, and sends nothing else.
+- **Title pages:** the title's own logo, standing in the place its story is set (a film at sea on water, one in New York in the city), with the plot, year, rating, running time, genres, cast and TMDB score, and buttons to play it or watch its trailer in YouTube.
+- **Music:** while music plays on the TV, a Now playing card leads the row with the cover, the song and the artist. Select it, or leave the screen alone, and the song shows large, the whole scene takes the cover's colours, and OK opens the music app. The TV stays awake while you listen.
 - **Weather:** now, the next 12 hours and the week, with a heads-up when rain is coming. Also wind and gusts, humidity, UV, air quality, the length of the day (or the moon's phase at night), and what's worth looking for in tonight's sky: planets, the space station, meteors, the northern lights. Select the temperature in the top corner. No API key needed.
 - **Your dock, your order.** Pick the apps and their order; it never rearranges itself. Amazon's built-in extras stay out of the way.
 - **Instant Home.** The Home button and waking the TV land on FireSky, not Amazon's home screen.
 - **PlayStation tile**, only when one is plugged in, that shows whether the console is on and switches to its input (TVs with Fire TV built in). Hold OK on it to turn it off.
 - **While you watch:** hold **≡** in any app for the time, the weather and your apps. A clock shows when you pause, and a quiet note when the space station is about to pass over or rain is near.
-- **Morning brief:** the first time the TV wakes each day, the date, the weather, the light and tonight's sky for a few seconds. Any key skips it.
-- **Idle mode:** after three minutes untouched, only the sky and the clock remain, with lightning in a thunderstorm, a hot-air balloon on some calm mornings, and fireworks at New Year.
+- **Morning and evening brief:** the first time the TV wakes each day, and again after sunset, the date, the weather, the light and tonight's sky. It stays until you press a key.
+- **Idle mode:** after three minutes untouched, only the sky and the clock remain, with lightning in a thunderstorm, and now and then something passing: a hot-air balloon on a calm morning, birds at dusk, a kite on a windy afternoon, a sailboat on the water, a lit train across the plains at night, and fireworks at New Year.
 
 ## Screenshots
 
@@ -61,12 +62,18 @@ No ads, no sponsored rows, no account. It learns your habits on the TV and keeps
 |---|---|
 | ![A pick, saying why it's there](docs/screenshots/home-day.jpg) | ![A new film on one of your apps](docs/screenshots/new-on-your-apps.jpg) |
 | Picks from what you watch, each saying why | New and trending on your services |
+| ![A title page, with the title's own logo in the desert it's set in](docs/screenshots/title-page.jpg) | ![The evening brief](docs/screenshots/brief.jpg) |
+| A title's page: its own logo, standing where its story is set | The evening brief, there until you're done |
+| ![Music playing, first in the row](docs/screenshots/music.jpg) | ![Music playing on the idle screen](docs/screenshots/music-idle.jpg) |
+| Music playing, first in the row | Left alone, the song large and the scene in its colours |
 | ![The weather panel](docs/screenshots/weather.jpg) | ![All apps](docs/screenshots/all-apps.jpg) |
 | Weather, from the temperature in the corner | All apps, without the clutter |
-| ![The space station crossing the sky](docs/screenshots/space-station.jpg) | ![The northern lights during a strong storm](docs/screenshots/northern-lights.jpg) |
-| The view follows the space station as it passes over | The northern lights (shown during a simulated Kp 9 storm) |
-| ![The home screen over water](docs/screenshots/place-water.jpg) | ![The home screen over islands](docs/screenshots/place-islands.jpg) |
-| Water under the sky instead of mountains | Shuffled, each app gets a place of its own |
+| ![The northern lights during a strong storm](docs/screenshots/northern-lights.jpg) | ![Space: the real stars and the Milky Way, with no land](docs/screenshots/place-space.jpg) |
+| The northern lights (shown during a simulated Kp 9 storm) | Space: the real stars and the Milky Way, in the app's colour |
+| ![Water at sunset](docs/screenshots/place-water.jpg) | ![Islands](docs/screenshots/place-islands.jpg) |
+| Water at sunset, reflecting the real sky | Islands |
+| ![A desert of dunes](docs/screenshots/place-desert.jpg) | ![A forest by a lake](docs/screenshots/place-forest.jpg) |
+| A desert of dunes | A forest by a lake |
 
 ## Compatibility
 
@@ -140,13 +147,13 @@ FireSky's settings are on the TV: hold **OK** on the **Settings** tile (or press
 
 | Setting | What it does |
 |---|---|
-| Place | The land under the sky: Mountains, Water, City, Plains or Islands; or shuffled, each app its own or a new one each day |
+| Place | The land under the sky: Mountains, Water, City, Plains, Islands, Desert or Forest, or Space with no land at all; or shuffled among the landscapes, each app its own new one every morning, or one for all a day. Shuffling never picks space |
 | Temperature, Wind, Clock | °C or °F, mph or km/h, 12 or 24-hour. Auto follows the TV |
 | Streaming country | Where your subscriptions are, for New and Trending. Auto follows the TV |
 | PlayStation tile | Only when the TV sees a PlayStation, always in the dock on a given HDMI port, or off |
 | While you watch | The glance when you hold **≡** in another app, the pause clock and the notes. Can be just the glance, or off |
 | New and Trending | Scan the QR code with your phone and paste a free TMDB key there. No typing on the remote |
-| Morning brief | On or off: the day's brief on the first wake |
+| Morning brief | On or off: the brief on the day's first wake and the first after sunset |
 | Home button | Whether Home opens FireSky, and how to set it up if not |
 | Hidden apps | Brings back apps hidden from All apps |
 | Version | Installs a downloaded update, or looks for one |
@@ -166,7 +173,7 @@ The page your phone opens from the QR code walks through this too.
 | Button | Action |
 |---|---|
 | **OK** | Open the selected app or title |
-| **Hold OK** or **Menu (☰)** | Options for the selected tile: move or hide it, or hide a card or see its details. On the Settings tile: FireSky settings, or Amazon's home screen |
+| **Hold OK** or **Menu (☰)** | Options for the selected tile: move or hide it, or hide a card or see its details. On a suggestion: not interested, or seen it and whether you liked it. On the Settings tile: FireSky settings, or Amazon's home screen |
 | **Play/Pause** | On a film or show card, its title page. Anywhere else, carry on with what you were last watching |
 | **Up** to the temperature in the corner, then **OK** | Weather |
 | **Home** | Return to FireSky, on the tile you left from. Press again for the first card |
@@ -217,7 +224,7 @@ FireSky has no account, no analytics and no server. Everything it learns about y
 |---|---|
 | [GeoJS](https://www.geojs.io) or [ipwho.is](https://ipwho.is) | Your approximate location from your IP address, once a week. Only the city-level result is kept. |
 | [Open-Meteo](https://open-meteo.com) | Weather and air quality for that location |
-| [TMDB](https://www.themoviedb.org) and [Wikidata](https://www.wikidata.org) | Titles, artwork and links to them in your apps (with your own TMDB key). For picks, titles you've watched are looked up by name; nothing else about your viewing is sent. |
+| [TMDB](https://www.themoviedb.org) and [Wikidata](https://www.wikidata.org) | Titles, artwork, logos and keywords, and links to them in your apps (with your own TMDB key). For picks, titles you've watched are looked up by name; nothing else about your viewing is sent. |
 | [NOAA SWPC](https://www.swpc.noaa.gov) | Northern lights forecast |
 | [CelesTrak](https://celestrak.org) | The space station's orbit |
 | [GitHub](https://github.com/jeffersonaaron25/firesky-launcher/releases) | New releases of FireSky |
@@ -299,7 +306,7 @@ Run the unit tests (no TV needed) with:
 
 - Film and show data and images from [TMDB](https://www.themoviedb.org), with availability from JustWatch. This product uses the TMDB API but is not endorsed or certified by TMDB.
 - Weather from [Open-Meteo](https://open-meteo.com) (CC BY 4.0)
-- Star positions and constellation lines from [d3-celestial](https://github.com/ofrohn/d3-celestial) by Olaf Frohn (BSD-3-Clause)
+- Star positions, constellation lines and names from [d3-celestial](https://github.com/ofrohn/d3-celestial) by Olaf Frohn (BSD-3-Clause); the Milky Way from the [Milky Way Outline Catalog](http://www.skymap.com/milkyway_cat.htm) by Jose R. Vieira, via d3-celestial. `tools/make_sky.py` builds the TV's star catalogue from them
 - Space station orbits from [CelesTrak](https://celestrak.org), computed with SGP4 ported from [satellite.js](https://github.com/shashwatak/satellite-js) (MIT)
 - Northern lights forecast from [NOAA SWPC](https://www.swpc.noaa.gov)
 - Streaming links from [Wikidata](https://www.wikidata.org) (CC0)

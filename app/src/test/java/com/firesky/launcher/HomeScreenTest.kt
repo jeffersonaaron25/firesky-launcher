@@ -189,6 +189,39 @@ class HomeScreenTest {
         assertTrue(s.tonight().none { it.key == "t-resume" })
     }
 
+    @Test fun aTitleCanBeMarkedSeenAndLeavesTheRow() {
+        Taste.init(RuntimeEnvironment.getApplication())
+        var relearned = 0
+        s.relearn = { relearned++ }
+        s.titles = (1..10).map { Tmdb.Item(it, false, "Show $it", true, "com.netflix.ninja", "/b$it.jpg", 100.0 - it, null) }
+        s.titles.forEach { s.thumbs["t-${it.key}"] = android.graphics.Bitmap.createBitmap(4, 4, android.graphics.Bitmap.Config.ARGB_8888).asImageBitmap() }
+        settle()
+        val card = s.tonight().first { it.kind == Kind.TITLE }
+        s.openMenu(card)
+        assertEquals(listOf(MenuAct.NOT_INTERESTED, MenuAct.LIKED, MenuAct.DISLIKED), s.menu!!.items)
+        // Seen it, liked it.
+        press(Key.DirectionDown); press(Key.DirectionCenter); settle()
+        assertNull(s.menu)
+        assertTrue(s.tonight().none { it.key == card.key })
+        assertTrue(card.hideId in s.saidCards)
+        assertFalse(card.hideId in s.hiddenCards)
+        assertEquals(1, relearned)
+        // Kept with the watch history, so the picks learn from it.
+        val ctx = RuntimeEnvironment.getApplication()
+        val until = SystemClock.uptimeMillis() + 3000
+        while (card.hideId !in Taste.said(ctx) && SystemClock.uptimeMillis() < until) Thread.sleep(20)
+        assertTrue(card.hideId in Taste.said(ctx))
+        // Not interested hides the next one, and counts against it.
+        val next = s.tonight().first { it.kind == Kind.TITLE }
+        s.openMenu(next)
+        press(Key.DirectionCenter); settle()
+        assertTrue(next.hideId in s.hiddenCards)
+        assertEquals(2, relearned)
+        // Cards that aren't titles FireSky offered keep a plain Hide.
+        s.openMenu(s.tonight().first { it.kind != Kind.TITLE && it.hideId != null })
+        assertEquals(MenuAct.HIDE_CARD, s.menu!!.items.first())
+    }
+
     @Test fun closingAllAppsGoesBackToItsTile() {
         press(Key.DirectionDown)
         // All apps is the last tile, however many the dock has.
@@ -224,6 +257,26 @@ class HomeScreenTest {
         assertTrue(s.idleDue(SystemClock.uptimeMillis() + HomeState.IDLE_MS + 1))
     }
 
+    /** The picture of the home screen for coming back to it is taken just before the idle screen, never of it. */
+    @Test fun thePictureIsTakenBeforeTheIdleScreen() {
+        var pictures = 0
+        s.beforeIdle = { assertFalse(s.idle); pictures++ }
+        s.goIdle(); s.goIdle()
+        assertEquals(1, pictures)
+        assertTrue(s.nearIdle())
+        s.idle = false
+        assertTrue("the home screen is still coming back", s.nearIdle())
+        assertFalse(s.nearIdle(SystemClock.uptimeMillis() + HomeState.IDLE_LEAVE_MS + 1))
+    }
+
+    /** Home from FireSky's own settings is the home screen, as Back is. */
+    @Test fun homeClosesSettings() {
+        s.settings = true; s.guide = true; settle()
+        s.home(); settle()
+        assertFalse(s.settings)
+        assertFalse(s.guide)
+    }
+
     @Test fun wakingRunsTheRise() {
         s.woke(); settle(200); settle(1400)
         assertEquals(1, s.wakeTick)
@@ -233,6 +286,56 @@ class HomeScreenTest {
         s.idle = true; settle()
         press(Key.DirectionRight); settle()
         assertFalse(s.idle)
+    }
+
+    private fun playing() {
+        s.apps = s.apps + app("com.spotify.tv.android", "Spotify", 0xFF1DB954)
+        s.music = Music.Track("com.spotify.tv.android", "A Song", "An Artist", null, intArrayOf(0xFFE04040.toInt(), 0xFF4060E0.toInt()), "k")
+        settle()
+    }
+
+    /** OK on the music's card shows the music on its own, with its app a press away; Back goes home. */
+    @Test fun theMusicCardShowsTheMusicOnItsOwn() {
+        playing()
+        assertEquals(HomeState.MUSIC_CARD, s.tonight().first().key)
+        press(Key.DirectionCenter); settle()
+        assertTrue(s.idle)
+        assertTrue(opened.isEmpty())
+        rule.onAllNodesWithText("Open Spotify").assertCountEquals(1)
+        press(Key.Back); settle()
+        assertFalse(s.idle)
+        assertTrue(opened.isEmpty())
+    }
+
+    @Test fun okOnTheMusicOpensItsApp() {
+        playing()
+        s.idle = true; settle()
+        press(Key.DirectionCenter); settle()
+        assertFalse(s.idle)
+        assertEquals(listOf("a-com.spotify.tv.android"), opened)
+    }
+
+    /** The remote's play keys are the music's while it's on screen: they don't wake the home screen. */
+    @Test fun playKeysGoOnToTheMusic() {
+        playing()
+        s.idle = true; settle()
+        press(Key.MediaPlayPause); settle()
+        assertTrue(s.idle)
+        assertTrue(opened.isEmpty())
+        // And on its card, Play is the music's too, not a title page.
+        s.idle = false; settle()
+        press(Key.MediaPlayPause); settle()
+        assertNull(s.detail)
+        assertTrue(opened.isEmpty())
+    }
+
+    /** Without music, the idle screen has no button, and OK wakes the home screen as any key does. */
+    @Test fun noMusicNoButton() {
+        s.idle = true; settle()
+        rule.onAllNodesWithText("Open", substring = true).assertCountEquals(0)
+        press(Key.DirectionCenter); settle()
+        assertFalse(s.idle)
+        assertTrue(opened.isEmpty())
     }
 
     @Test fun eightCardsAndTheRowSlidesToTheOneYouPick() {

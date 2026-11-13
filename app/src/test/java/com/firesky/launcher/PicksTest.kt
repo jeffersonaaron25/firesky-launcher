@@ -21,6 +21,23 @@ class PicksTest {
                      feed: String = "", partSeen: Int = 0, partOf: Int = 0, part: Int = 0, firstSeen: String = "", skies: Set<String> = emptySet()) =
         Picks.Cand(key, title, pkg, "/b.jpg", null, tags.toList(), vote, votes, feed, partSeen, partOf, part, firstSeen, skies)
 
+    @Test fun aTitleSeenElsewhereCountsLikeOneSeenHere() {
+        val heat = info("title:m949", "Heat", p("director", "Michael Mann"), k("heist"))
+        val dull = info("title:m950", "Dull Film", p("director", "Nobody Special"), k("heist"))
+        val prof = Picks.profile(listOf(
+            Picks.Watched(heat, Taste.Verdict.LIKED, false, now),
+            Picks.Watched(dull, Taste.Verdict.DISLIKED, false, now),
+        ), now)
+        val mann = prof.values.first { it.name == "Michael Mann" }
+        assertTrue(mann.w > 0)
+        assertEquals(", which you liked", mann.from.single().tail)
+        val nobody = prof.values.first { it.name == "Nobody Special" }
+        assertTrue(nobody.w < 0)
+        assertEquals(", which you didn't like", nobody.from.single().tail)
+        // Liked and not liked cancel out on what they share.
+        assertTrue(prof.values.none { it.name == "heist" && it.w > .01f })
+    }
+
     private val sicario = info("title:m273481", "Sicario", p("director", "Denis Villeneuve"), p("dp", "Roger Deakins"), p("writer", "Taylor Sheridan"), k("cartel"), k("thriller"))
     private val br2049 = info("title:m335984", "Blade Runner 2049", p("director", "Denis Villeneuve"), p("dp", "Roger Deakins"), k("dystopia"))
     private val witcher = info("title:t71912", "The Witcher", k("fantasy"), k("monsters"))

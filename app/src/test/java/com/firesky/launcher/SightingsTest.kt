@@ -15,7 +15,56 @@ import java.util.Calendar
 class SightingsTest {
     private val sun = Sun(7 * 60, 17 * 60)
 
-    @After fun clean() { Balloon.test = false; Fireworks.test = false }
+    @After fun clean() { Balloon.test = false; Fireworks.test = false; Sightings.test = Sightings.NONE }
+
+    /** Each only where and when it could be: birds at dusk, a kite on a windy afternoon, a sail on the water, a train on the plains at night. */
+    @Test fun eachSightingHasItsOwnTimeAndPlace() {
+        fun can(m: Int, wind: Float, place: String?, kind: Int = Sky.CLEAR) = Sightings.possible(m.toFloat(), sun, kind, wind, place)
+        assertEquals(listOf(Sightings.BIRDS), can(17 * 60 - 20, 8f, null))
+        assertTrue(Sightings.KITE in can(14 * 60, 25f, Places.PLAINS))
+        assertFalse(Sightings.KITE in can(14 * 60, 6f, Places.PLAINS))
+        // Trees and towers leave no room for a kite.
+        assertFalse(Sightings.KITE in can(14 * 60, 25f, Places.CITY))
+        assertFalse(Sightings.KITE in can(14 * 60, 25f, Places.FOREST))
+        assertFalse(Sightings.KITE in can(14 * 60, 25f, Places.DESERT))
+        // Birds head home at dusk over every place.
+        for (k in Places.KINDS) assertTrue(k, Sightings.BIRDS in can(17 * 60 - 20, 8f, k))
+        assertTrue(Sightings.BOAT in can(11 * 60, 12f, Places.WATER))
+        assertFalse(Sightings.BOAT in can(11 * 60, 12f, Places.PLAINS))
+        assertEquals(listOf(Sightings.TRAIN), can(21 * 60, 8f, Places.PLAINS))
+        assertTrue(can(21 * 60, 8f, Places.CITY).isEmpty())
+        // Nothing in the rain, and nothing at all in space.
+        assertTrue(can(17 * 60 - 20, 8f, null, Sky.RAIN).isEmpty())
+        assertTrue(can(17 * 60 - 20, 8f, Places.SPACE).isEmpty())
+    }
+
+    /** Rare: nothing for the first while, then now and then one, in view for under a minute and a half, and gone again. */
+    @Test fun sightingsComeNowAndThenAndGo() {
+        val out = FloatArray(4)
+        val can = listOf(Sightings.BIRDS, Sightings.KITE)
+        assertEquals(Sightings.NONE, Sightings.at(10f, can, 1, 1f, out))
+        var seen = 0; var shown = 0
+        for (run in 0 until 20) {
+            var t = 0f; var was = Sightings.NONE
+            while (t < 3600f) {
+                val k = Sightings.at(t, can, run, 1f, out)
+                if (k != Sightings.NONE) { shown++; assertTrue(out[3] in 0f..1f); assertTrue(k in can) }
+                if (k != Sightings.NONE && was == Sightings.NONE) seen++
+                was = k; t += 1f
+            }
+        }
+        // Over 20 hours of idle screen: a few an hour, on average, and never on screen most of the time.
+        assertTrue("seen $seen", seen in 20..120)
+        assertTrue("shown $shown s", shown < 20 * 3600 / 4)
+        assertEquals(Sightings.NONE, Sightings.at(500f, emptyList(), 1, 1f, out))
+    }
+
+    @Test fun oneCanBeAskedForOverAdb() {
+        val out = FloatArray(4)
+        Sightings.test = Sightings.TRAIN
+        assertEquals(Sightings.TRAIN, Sightings.at(10f, emptyList(), 3, 1f, out))
+        assertTrue(out[3] > 0f)
+    }
 
     @Test fun aLightBreezeMovesThingsAsTheyAlwaysMoved() {
         assertEquals(1f, Wind.factor(10f), .01f)

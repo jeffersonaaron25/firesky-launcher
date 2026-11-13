@@ -70,10 +70,11 @@ fun settingRows(s: HomeState, act: Actions): List<SettingRow> {
             "Place",
             when (Prefs.chosen(Prefs.PLACE)) {
                 Places.WATER -> "Water"; Places.CITY -> "City"; Places.PLAINS -> "Plains"; Places.ISLANDS -> "Islands"
+                Places.DESERT -> "Desert"; Places.FOREST -> "Forest"; Places.SPACE -> "Space"
                 Places.SHUFFLE -> "Shuffle · each app"; Places.DAILY -> "Shuffle · each day"; else -> "Mountains"
             },
-            "The land under the sky. Each app gets its own version of it, as each gets its own mountains.",
-            Prefs.PLACE, listOf("", Places.WATER, Places.CITY, Places.PLAINS, Places.ISLANDS, Places.SHUFFLE, Places.DAILY),
+            "The land under the sky. Shuffle each app gives every app a landscape of its own, a new one each morning; shuffle each day gives them all the same one. Shuffling keeps to the landscapes: space only when you choose it.",
+            Prefs.PLACE, listOf("", Places.WATER, Places.CITY, Places.PLAINS, Places.ISLANDS, Places.DESERT, Places.FOREST, Places.SPACE, Places.SHUFFLE, Places.DAILY),
         ),
         SettingRow(
             "Motion", if (Prefs.motion) "Gentle" else "Off",
@@ -113,7 +114,7 @@ fun settingRows(s: HomeState, act: Actions): List<SettingRow> {
         ),
         SettingRow(
             "Morning brief", if (Prefs.brief) "On" else "Off",
-            "The first time the TV wakes each day: the date, the weather and tonight's sky, for a few seconds.",
+            "The first time the TV wakes each day, and again after sunset: the date, the weather and tonight's sky, until you press a key.",
             Prefs.BRIEF, listOf("", "off"),
         ),
         SettingRow(

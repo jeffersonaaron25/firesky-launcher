@@ -56,6 +56,13 @@ object Sky {
 
     val DEFAULT_SUN = Sun(7 * 60, 17 * 60)
 
+    /**
+     * Where the mountains' feet are, as a share of the screen's height, the same at every hour: the
+     * real sky is the same whatever the time and whichever app, so nothing under it may move either.
+     * Every place stands on it; the sky's own horizon is [Places.HORIZON] above it.
+     */
+    const val HORIZON = .76f
+
     class Key(
         val sky: FloatArray, val lay: FloatArray, val haze: FloatArray, val hz: Float, val cloud: FloatArray,
         val water: Float, val stars: Float, val aurora: Float, val ridges: Array<FloatArray>,
@@ -82,19 +89,19 @@ object Sky {
         mapOf(
             "dusk" to key(
                 rgb(0x1A1636, 0x6A3A6C, 0xF2A066), rgb(0x6B4470, 0x47305A, 0x2C1F40, 0x170F25),
-                floatArrayOf(242f, 160f, 102f, .16f), .72f, floatArrayOf(112f, 84f, 108f), 7, water = true,
+                floatArrayOf(242f, 160f, 102f, .16f), HORIZON, floatArrayOf(112f, 84f, 108f), 7, water = true,
             ),
             "alpine" to key(
                 rgb(0x2C5F9E, 0x86B5DE, 0xE3EEF5), rgb(0xA3BBD0, 0x6D8CA8, 0x46637B, 0x223646),
-                floatArrayOf(225f, 238f, 246f, .22f), .8f, floatArrayOf(232f, 238f, 245f), 3,
+                floatArrayOf(225f, 238f, 246f, .22f), HORIZON, floatArrayOf(232f, 238f, 245f), 3,
             ),
             "night" to key(
                 rgb(0x03060D, 0x0A1930, 0x14404F), rgb(0x123044, 0x0C2132, 0x071520, 0x030A10),
-                floatArrayOf(60f, 180f, 160f, .07f), .74f, floatArrayOf(26f, 36f, 54f), 11, water = true, night = true,
+                floatArrayOf(60f, 180f, 160f, .07f), HORIZON, floatArrayOf(26f, 36f, 54f), 11, water = true, night = true,
             ),
             "amber" to key(
                 rgb(0x16112B, 0x58385C, 0xE39457), rgb(0x5A3A55, 0x3C2742, 0x24182E, 0x120C19),
-                floatArrayOf(227f, 148f, 87f, .14f), .74f, floatArrayOf(120f, 92f, 104f), 17, water = true,
+                floatArrayOf(227f, 148f, 87f, .14f), HORIZON, floatArrayOf(120f, 92f, 104f), 17, water = true,
             ),
         )
     }
@@ -139,6 +146,17 @@ object Sky {
         val glow0 = floatArrayOf(255f, 250f, 225f); val glow1 = floatArrayOf(255f, 190f, 130f)
         for (i in 0 until 3) { v[CORE + i] = lerp(core0[i], core1[i], low); v[GLOW + i] = lerp(glow0[i], glow1[i], low) }
         v[SUN_A] = smooth((s + .12f) / .12f) * smooth((1.12f - s) / .12f)
+    }
+
+    /**
+     * Out among the stars it is always night: a deep, nearly black sky, a little lighter low down where
+     * the tile's colour shows, the stars at full strength, and no sun, painted moon, water or aurora.
+     */
+    fun space(v: FloatArray) {
+        val sky = rgb(0x03040B, 0x0A0C20, 0x22254A)
+        for (i in 0 until 9) v[i] = sky[i]
+        for (i in 0 until 4) v[21 + i] = 0f
+        v[WATER] = 0f; v[STARS] = 1f; v[AURORA] = 0f; v[MOON] = 0f; v[SUN_A] = 0f
     }
 
     /** How bright each ridge gets in a vivid tile's colour, far to near. */
@@ -243,9 +261,7 @@ class Flow {
         private set
 
     fun snap(m: Float, sun: Sun) {
-        lit = Places.lit(m, sun)
-        Sky.pack(m, sun, col)
-        tint?.let { Sky.tint(col, it) }
+        colour(m, sun, tint)
         val d = Sky.dayAt(m, sun)
         val sh = shape
         for (i in 0 until 4) {
@@ -253,6 +269,14 @@ class Flow {
             val k = if (sh != null) 0f else d.t
             for (j in 0 until POINTS) ridge[i][j] = a[j] + (b[j] - a[j]) * k
         }
+    }
+
+    /** The light of minute [m], washed with [with] in place of the tile's own colour, leaving the land's shape alone. */
+    fun colour(m: Float, sun: Sun, with: FloatArray?) {
+        lit = Places.lit(m, sun)
+        Sky.pack(m, sun, col)
+        if (land?.kind == Places.SPACE) Sky.space(col)
+        with?.let { Sky.tint(col, it) }
     }
 
     /** Only mountains drift from one range to the next: a city or a coast reshaping itself would just look broken. */

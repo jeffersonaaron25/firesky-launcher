@@ -51,6 +51,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
@@ -110,6 +111,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -149,6 +151,8 @@ interface Actions {
     fun trailer(c: Card, link: String) {}
     /** The full-size picture for a title's page. Null leaves the card's own smaller one. */
     suspend fun art(c: Card): ImageBitmap? = null
+    /** A title's own lettering, from its TMDB [path]. Null keeps the name in type. */
+    suspend fun logo(path: String): ImageBitmap? = null
 }
 
 /** Everything is laid out in the mock's 1280x720 design units and scaled to the screen. */
@@ -198,18 +202,35 @@ fun Home(s: HomeState, act: Actions) {
 }
 
 private fun isOk(e: KeyEvent) = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
+private const val LEAVE_IDLE_WAIT_MS = 200
+private val MEDIA = setOf(Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause, Key.MediaStop, Key.MediaNext, Key.MediaPrevious, Key.MediaFastForward, Key.MediaRewind)
+private fun isMedia(e: KeyEvent) = e.key in MEDIA
 
 private fun handleKey(s: HomeState, act: Actions, e: KeyEvent, fm: FocusManager): Boolean {
     s.lastInput = SystemClock.uptimeMillis()
     if (e.type == KeyEventType.KeyDown) s.live?.poke()
     val up = e.type == KeyEventType.KeyUp
     if (s.idle) {
+        // With music playing, OK opens its app, as the button says, and the remote's play keys go on to the music.
+        if (s.music != null) {
+            if (isMedia(e)) return false
+            if (isOk(e)) {
+                if (up) {
+                    s.idle = false
+                    s.music?.let { s.app(it.pkg) }?.let { Sfx.select(); act.open(s.appCard(it)) }
+                }
+                return true
+            }
+        }
         if (up) s.idle = false
         return true
     }
     if (!up) s.glance()
-    // Any press puts the brief away and then does what it always does.
-    if (s.brief != null) s.brief = null
+    // The brief stays until a key: any press puts it away, as "Go to home", and does nothing else.
+    if (s.brief != null) {
+        if (up) s.brief = null
+        return true
+    }
     // The app you picked is still opening, so another OK would open it twice.
     if (isOk(e) && SystemClock.uptimeMillis() < s.openingUntil) return true
     // The QR pages close with Back (or OK); under them, FireSky's settings have keys of their own.
@@ -289,12 +310,9 @@ private fun pick(s: HomeState, act: Actions, m: TileMenu) {
     Sfx.select()
     when (m.items[s.menuIndex]) {
         MenuAct.MOVE -> { s.moving = c.dockId; s.toast = "◀ ▶ to move · OK to place" }
-        MenuAct.HIDE, MenuAct.HIDE_CARD -> {
-            val row = if (c.dockId != null) s.dock() else s.tonight()
-            val i = row.indexOfFirst { it.key == c.key }
-            val next = row.getOrNull(i + 1) ?: row.getOrNull(i - 1) ?: s.dock().firstOrNull()
-            s.hide(c, next?.key)
-        }
+        MenuAct.HIDE, MenuAct.HIDE_CARD, MenuAct.NOT_INTERESTED -> s.hide(c, s.after(c))
+        MenuAct.LIKED -> s.seenIt(c, true, s.after(c))
+        MenuAct.DISLIKED -> s.seenIt(c, false, s.after(c))
         MenuAct.RESET -> s.resetDock()
         MenuAct.AMAZON -> act.amazonHome()
         MenuAct.FIRESKY -> { s.settingsIndex = 0; s.settings = true }
@@ -487,8 +505,15 @@ private fun Screen(s: HomeState, act: Actions) {
     LaunchedEffect(Unit) {
         while (true) {
             delay(5_000)
-            if (s.idleDue()) s.idle = true
+            if (s.idleDue()) s.goIdle()
         }
+    }
+    // Music on the idle screen is being listened to, so the TV stays awake: no screensaver, no sleep.
+    val view = LocalView.current
+    val listening = s.idle && s.music != null
+    DisposableEffect(listening) {
+        view.keepScreenOn = listening
+        onDispose { view.keepScreenOn = false }
     }
 
     // The two rows are worked out again only when something they show has changed, or time has
@@ -510,7 +535,12 @@ private fun Screen(s: HomeState, act: Actions) {
     val inShelf = remember { derivedStateOf { val f = focused.value; f == "wx" || tonight.any { it.key == f } } }
     val at = remember { derivedStateOf { val f = focused.value; tonight.indexOfFirst { it.key == f } } }
 
-    val ui by animateFloatAsState(if (s.idle || s.allApps) 0f else 1f, tween(if (s.allApps) 200 else 800), label = "ui")
+    // Back from the idle screen, the sky's next picture keeps the chip busy for a moment, so the cards wait
+    // for it and come in smoothly from the start rather than partway.
+    val was = remember { object { var idle = false } }
+    val wait = if (was.idle && !s.idle && !s.allApps) LEAVE_IDLE_WAIT_MS else 0
+    was.idle = s.idle
+    val ui by animateFloatAsState(if (s.idle || s.allApps) 0f else 1f, tween(if (s.allApps) 200 else 800, delayMillis = wait), label = "ui")
     val drop by animateFloatAsState(if (s.idle) 1f else 0f, tween(600, easing = FastOutSlowInEasing), label = "drop")
     val dockA = remember { Animatable(1f) }
 
@@ -557,6 +587,7 @@ private fun Screen(s: HomeState, act: Actions) {
     // Rain that's on its way shows as cloud first, drifting in from the side the weather is coming from.
     LaunchedEffect(s.wx, s.live) { s.wx?.let { s.live?.weather(if (it.kind == Sky.CLEAR && it.rainSoon) Sky.CLOUDY else it.kind, it.sun, it.cloud, it.windFrom, it.storm, it.windKmh) } }
     LaunchedEffect(s.idle, s.live) { s.live?.idle(s.idle) }
+    LaunchedEffect(s.live) { s.live?.music(s.music) }
     LaunchedEffect(s.plain, s.settings, s.live) { s.live?.calm(s.plain && !s.settings) }
 
     val rise = remember { Animatable(1f) }
@@ -571,9 +602,8 @@ private fun Screen(s: HomeState, act: Actions) {
     }
     // A wake shows black until the rise begins, never a frame of the screen as it was.
     fun riseNow() = if (s.wakeTick != riseFor) 0f else rise.value
-    // The day's brief holds the title, cards and dock back, then hands over to them.
+    // The day's brief holds the title, cards and dock back until a key hands over to them.
     val briefA by animateFloatAsState(if (s.brief != null) 1f else 0f, tween(if (s.brief != null) 0 else 700), label = "brief")
-    LaunchedEffect(s.brief) { if (s.brief != null) { delay(WAKE_MS.toLong() + Brief.SHOWN_MS); s.brief = null } }
     var lastBrief by remember { mutableStateOf(s.brief) }
     SideEffect { s.brief?.let { lastBrief = it } }
     fun Modifier.rising(delay: Float, always: Boolean = false) = graphicsLayer {
@@ -585,7 +615,9 @@ private fun Screen(s: HomeState, act: Actions) {
     val rising by remember { derivedStateOf { riseNow() < 1f } }
 
     val tile = remember(s, act) {
-        TileSet(wob.asState(), shine.asState(), { select(it.key); s.focusAt = it.key; landed.intValue++ }, act::open, s::openMenu, s.rects)
+        // The music's card shows the music on its own; its app is a press away from there.
+        val open: (Card) -> Unit = { c -> if (c.key == HomeState.MUSIC_CARD && s.music != null) s.listen() else act.open(c) }
+        TileSet(wob.asState(), shine.asState(), { select(it.key); s.focusAt = it.key; landed.intValue++ }, open, s::openMenu, s.rects)
     }
     val allTile = remember(s, act) { TileSet(wob.asState(), shine.asState(), { s.current = it.key; landed.intValue++ }, act::open, s::openMenu, s.rects) }
 
@@ -603,6 +635,7 @@ private fun Screen(s: HomeState, act: Actions) {
         }
 
         Status(s, wx, now, req("wx"), { select(it.key); s.focusAt = it.key }, Modifier.align(Alignment.TopEnd).padding(top = z.d(42), end = z.d(60)).rising(200f, always = true))
+        NowPlaying(s)
 
         Box(Modifier.offset(z.d(72), z.d(176)).graphicsLayer { alpha = ui }.rising(300f)) { Hero(hero) }
         if (briefA > 0f) (s.brief ?: lastBrief)?.let { b ->
@@ -621,7 +654,9 @@ private fun Screen(s: HomeState, act: Actions) {
                     .offset(z.d(ROW_X), z.d(424))
                     .wrapContentWidth(Alignment.Start, unbounded = true)
                     .offset { IntOffset(-slide.value.roundToInt(), 0) }
-                    .graphicsLayer { alpha = ui }
+                    // Faded draw by draw, not as one picture: in a picture of its own, the TV drops the
+                    // selected card's rounded corners while it fades.
+                    .graphicsLayer { alpha = ui; compositingStrategy = CompositingStrategy.ModulateAlpha }
                     .rising(420f),
                 card = { c, i, place -> Tile(c, s.app(c.pkg), CARD_W, 126f, false, req(c.key), tile, step = i + 4, thumb = s.thumbs[c.key], fadeIn = s.loading, outer = place) },
                 ghost = { c, thumb ->
@@ -637,7 +672,7 @@ private fun Screen(s: HomeState, act: Actions) {
                 .align(Alignment.BottomCenter)
                 .padding(bottom = z.d(26))
                 .rising(540f)
-                .graphicsLayer { alpha = ui * dockA.value; translationY = z.px(150f) * drop }
+                .graphicsLayer { alpha = ui * dockA.value; translationY = z.px(150f) * drop; compositingStrategy = CompositingStrategy.ModulateAlpha }
                 .background(Color.White.copy(alpha = .10f), dockShape)
                 .border(1.dp, Color.White.copy(alpha = .15f), dockShape)
                 .padding(horizontal = z.d(18), vertical = z.d(12)),
@@ -1202,4 +1237,44 @@ private fun DrawScope.gear() {
 private fun DrawScope.dots() {
     val r = size.height
     for (i in -1..1) for (j in -1..1) drawCircle(Color.White, r * .045f, Offset(center.x + i * r * .17f, center.y + j * r * .17f))
+}
+
+
+/**
+ * The music playing, large on the idle screen where the home screen names a title: its cover, its
+ * name and who it's by. It fades in with the idle screen and out when the music stops.
+ */
+@Composable
+private fun NowPlaying(s: HomeState) {
+    val z = LocalDz.current
+    var last by remember { mutableStateOf(s.music) }
+    SideEffect { s.music?.let { last = it } }
+    // In slowly with the idle screen; out quickly, before the cards it sits over come back.
+    val on = s.idle && s.music != null
+    val shown by animateFloatAsState(if (on) 1f else 0f, tween(if (on) 1000 else 350), label = "music")
+    if (shown <= 0f) return
+    val t = s.music ?: last ?: return
+    val app = remember(t.pkg) { s.app(t.pkg)?.label }
+    Column(Modifier.offset(z.d(72), z.d(440)).graphicsLayer { alpha = shown }) {
+        // A new song crossfades in over the last.
+        Crossfade(t, animationSpec = tween(800), label = "song") { song ->
+            val cover = remember(song) { song.cover?.asImageBitmap() }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(z.d(28))) {
+                if (cover != null) Image(cover, null, Modifier.size(z.d(148)).clip(RoundedCornerShape(z.d(14))), contentScale = ContentScale.Crop)
+                Column(Modifier.widthIn(max = z.d(820))) {
+                    T(song.title, 54f, 600, spacing = -.02f)
+                    if (song.artist.isNotEmpty()) T(song.artist, 26f, 400, .8f)
+                }
+            }
+        }
+        // Picked, as the remote's OK will press it, as on the brief: Back or Home go home.
+        if (app != null) {
+            Spacer(Modifier.height(z.d(26)))
+            Box(
+                Modifier.padding(start = if (t.cover != null) z.d(176) else 0.dp)
+                    .background(Color.White, RoundedCornerShape(z.d(14))).height(z.d(56)).padding(horizontal = z.d(28)),
+                contentAlignment = Alignment.Center,
+            ) { T("Open $app", 21f, 600, color = Color(0xFF0B0E15)) }
+        }
+    }
 }

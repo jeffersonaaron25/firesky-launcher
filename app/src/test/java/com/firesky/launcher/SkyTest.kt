@@ -27,7 +27,7 @@ class SkyTest {
 
     @Test fun middayIsTheDayScene() {
         val v = FloatArray(Sky.N); Sky.pack(720f, sun, v)
-        assertEquals(.8f, v[Sky.HZ], .001f)
+        assertEquals(Sky.HORIZON, v[Sky.HZ], .001f)
         assertEquals(0f, v[Sky.WATER], .001f)
         assertEquals(0f, v[Sky.STARS], .001f)
     }

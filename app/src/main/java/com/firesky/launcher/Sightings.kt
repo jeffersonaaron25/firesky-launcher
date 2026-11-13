@@ -50,6 +50,77 @@ object Balloon {
 }
 
 /**
+ * The balloon's companions on the idle screen: now and then one small thing crosses the picture at
+ * its true size and is gone within a minute. Birds heading home at dusk, a kite on a windy
+ * afternoon, a sailboat out on the water, a lit train crossing the plains after dark. Only one at a
+ * time, only where and when it could really be, and not every time.
+ */
+object Sightings {
+    const val NONE = 0; const val BIRDS = 2; const val KITE = 3; const val BOAT = 4; const val TRAIN = 5
+
+    /** The first comes this long after the idle screen does; then one might come this often. */
+    const val FIRST_S = 25f
+    const val EVERY_S = 300f
+
+    /** Seconds each is in view. */
+    private fun life(kind: Int) = when (kind) { BIRDS -> 38f; KITE -> 55f; BOAT -> 70f; TRAIN -> 60f; else -> 0f }
+
+    /** Asked for over adb: this one, whenever it could be at all. */
+    @Volatile var test = NONE
+
+    /** What could be out now, here: none of them in space, where nothing flies or sails. */
+    fun possible(m: Float, sun: Sun, kind: Int, windKmh: Float, place: String?): List<Int> {
+        if (place == Places.SPACE) return emptyList()
+        val wet = kind == Sky.RAIN || kind == Sky.SNOW
+        val out = ArrayList<Int>()
+        if (!wet && m in sun.set - 45f..sun.set + 20f) out += BIRDS
+        if (!wet && m in 12 * 60f..sun.set - 30f && windKmh in 14f..40f && place in setOf(null, Places.PLAINS, Places.WATER, Places.ISLANDS)) out += KITE
+        if (!wet && m in sun.rise + 30f..sun.set - 10f && windKmh in 4f..30f && place in setOf(Places.WATER, Places.ISLANDS)) out += BOAT
+        if ((m >= sun.set + 40f || m < 60f) && place == Places.PLAINS) out += TRAIN
+        return out
+    }
+
+    /**
+     * Which one is out [t] seconds into the idle screen, from [can], and where, as x, y, size and how
+     * much it shows into [out]; returns its kind, or [NONE]. [day] makes each idle screen's run its own.
+     * [direction] is the wind's: 1 leftwards. Things that ride the land or the water get their height
+     * from the shader; their y here is 0.
+     */
+    fun at(t: Float, can: List<Int>, day: Int, direction: Float, out: FloatArray): Int {
+        out[3] = 0f
+        val forced = test.takeIf { it != NONE }
+        val list = if (forced != null) listOf(forced) else can
+        // Asked for over adb, it comes almost at once.
+        val first = if (forced != null) 2f else FIRST_S
+        if (list.isEmpty() || t < first) return NONE
+        val slot = ((t - first) / EVERY_S).toInt()
+        val r = Rng(day * 131 + slot * 17)
+        // About every other slot is empty: they're rare.
+        if (r.next() < .5 && forced == null) return NONE
+        val kind = list[(r.next() * list.size).toInt().coerceIn(0, list.size - 1)]
+        val k = ((t - first) % EVERY_S) / life(kind)
+        if (k >= 1f) return NONE
+        val fade = smooth(k / .08f) * smooth((1 - k) / .08f)
+        val dir = if (r.next() < .5) 1f else -1f
+        when (kind) {
+            // A loose skein heading home, high and across the whole sky.
+            BIRDS -> { out[0] = if (dir > 0) 1340f - 1400f * k else -60f + 1400f * k; out[1] = 170f + 90f * r.next().toFloat() - 30f * k; out[2] = 4f * dir }
+            // Held in one place by its string, swooping and bobbing with the gusts.
+            KITE -> {
+                val x0 = 760f + 360f * r.next().toFloat()
+                out[0] = x0 + 26f * sin(t * .5f) + 10f * sin(t * 1.3f); out[1] = 250f + 18f * sin(t * .7f + 1f) + 6f * sin(t * 2.1f); out[2] = 7f * (if (direction >= 0) 1f else -1f)
+            }
+            // A small sail making its way along the far water, with the wind.
+            BOAT -> { val x0 = 300f + 600f * r.next().toFloat(); out[0] = x0 - direction * 260f * k; out[1] = 0f; out[2] = 15f * (if (direction >= 0) 1f else -1f) }
+            // A string of lit carriages along the far rise.
+            TRAIN -> { out[0] = if (dir > 0) 1380f - 1600f * k else -220f + 1600f * k; out[1] = 0f; out[2] = 150f * dir }
+        }
+        out[3] = fade
+        return kind
+    }
+}
+
+/**
  * Fireworks over the valley around midnight on New Year's Eve. They're drawn over the finished
  * picture each frame, which costs next to nothing, rather than with the sky behind the hills, which
  * meant drawing the whole landscape again for every move of a spark.

@@ -126,15 +126,18 @@ class MediaListener : NotificationListenerService() {
                     Resume.save(this@MediaListener, c.packageName, state, playing, c.metadata)
                     playing = state?.takeIf { it.state == PlaybackState.STATE_PLAYING }
                     Playing.report(c.packageName, state, c.metadata)
+                    Music.report(c.packageName, state, c.metadata)
                 }
 
                 override fun onMetadataChanged(metadata: MediaMetadata?) {
                     Playing.report(c.packageName, c.playbackState, metadata)
+                    Music.report(c.packageName, c.playbackState, metadata)
                 }
             }
             c.registerCallback(cb, main)
             held += c to cb
             runCatching { Playing.report(c.packageName, c.playbackState, c.metadata) }
+            runCatching { Music.report(c.packageName, c.playbackState, c.metadata) }
         }
     }
 

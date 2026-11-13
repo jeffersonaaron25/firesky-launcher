@@ -7,6 +7,7 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performKeyInput
@@ -38,12 +39,14 @@ class DetailKeysTest {
         override fun open(c: Card) { opened += c.key; s.opening() }
         override fun amazonHome() {}
         override fun trailer(c: Card, link: String) { trailers += link }
+        override suspend fun logo(path: String) = if (path == "/l1.png") android.graphics.Bitmap.createBitmap(500, 100, android.graphics.Bitmap.Config.ARGB_8888).asImageBitmap() else null
     }
 
     private fun app(pkg: String, label: String) = AppEntry(pkg, label, Intent(), null, null, Color(0xFF808080))
 
-    private fun info(id: Int, trailer: String?) = Details.Info(
+    private fun info(id: Int, trailer: String?, logo: String? = null) = Details.Info(
         Details.key(false, id), "Show $id", "What Show $id is about.", "2025", "TV-14", "2 seasons", listOf("Drama"), 8.2, 900, listOf("Ada Reyes"), "Created by Jo Lind", trailer,
+        keywords = listOf("ocean", "storm"), logo = logo,
     )
 
     @Before fun setUp() {
@@ -74,11 +77,36 @@ class DetailKeysTest {
         assertEquals("t-title:t1", s.current)
         press(Key.MediaPlayPause); settle()
         assertEquals("Show 1", s.detail!!.info.title)
-        assertEquals(listOf(DetailAct.PLAY, DetailAct.TRAILER, DetailAct.HIDE), s.detail!!.acts)
+        assertEquals(listOf(DetailAct.PLAY, DetailAct.TRAILER, DetailAct.LIKED, DetailAct.DISLIKED, DetailAct.HIDE), s.detail!!.acts)
         assertTrue(opened.isEmpty())
         rule.onAllNodesWithText("What Show 1 is about.").assertCountEquals(1)
         rule.onAllNodesWithText("▶  Play on Netflix").assertCountEquals(1)
         assertFalse(s.plain)
+        // All five buttons fit across the screen, the last included.
+        val screen = rule.onRoot().fetchSemanticsNode().size.width
+        val last = rule.onAllNodesWithText("Not interested").fetchSemanticsNodes().single().boundsInRoot
+        assertTrue("Not interested ends at ${last.right} of $screen", last.right <= screen)
+    }
+
+    /** The title's own lettering takes the place of its name on the page, where TMDB has one that reads. */
+    @Test fun aTitleWithLetteringShowsItInPlaceOfItsName() {
+        s.details = listOf(info(1, "abc123", "/l1.png"), info(2, null, "/dark.png")).associateBy { it.key }
+        settle()
+        toTitle(1)
+        press(Key.MediaPlayPause); settle(1200)
+        // The lettering, where the name was: as tall as the name in type. The card's picture is the other.
+        val logo = rule.onAllNodesWithContentDescription("Show 1").fetchSemanticsNodes().map { it.boundsInRoot }.single { it.top < 400f }
+        assertEquals(116f, logo.height, 1f)
+        assertEquals(72f, logo.left, 1f)
+        // Up there, only the home screen behind still has the name in type.
+        fun named(t: String) = rule.onAllNodesWithText(t).fetchSemanticsNodes().count { it.boundsInRoot.top < 400f }
+        assertEquals(1, named("Show 1"))
+        press(Key.Back); settle()
+        // Lettering that can't be read keeps the name.
+        press(Key.DirectionRight)
+        press(Key.MediaPlayPause); settle(1200)
+        assertTrue(rule.onAllNodesWithContentDescription("Show 2").fetchSemanticsNodes().none { it.boundsInRoot.top < 400f })
+        assertEquals(2, named("Show 2"))
     }
 
     @Test fun backClosesThePageAndLeavesYouOnTheCard() {
@@ -145,8 +173,8 @@ class DetailKeysTest {
         press(Key.MediaPlayPause); settle()
         press(Key.DirectionLeft)
         assertEquals(0, s.detail!!.index)
-        repeat(5) { press(Key.DirectionRight) }
-        assertEquals(2, s.detail!!.index)
+        repeat(7) { press(Key.DirectionRight) }
+        assertEquals(4, s.detail!!.index)
         // The arrows are the page's while it's open: the card under it hasn't changed.
         assertEquals("t-title:t1", s.current)
     }
@@ -154,7 +182,7 @@ class DetailKeysTest {
     @Test fun aTitleWithNoTrailerHasNoTrailerButton() {
         toTitle(2)
         press(Key.MediaPlayPause); settle()
-        assertEquals(listOf(DetailAct.PLAY, DetailAct.HIDE), s.detail!!.acts)
+        assertEquals(listOf(DetailAct.PLAY, DetailAct.LIKED, DetailAct.DISLIKED, DetailAct.HIDE), s.detail!!.acts)
         rule.onAllNodesWithText("Trailer").assertCountEquals(0)
     }
 
@@ -163,7 +191,7 @@ class DetailKeysTest {
         settle()
         toTitle(1)
         press(Key.MediaPlayPause); settle()
-        assertEquals(listOf(DetailAct.PLAY, DetailAct.HIDE), s.detail!!.acts)
+        assertEquals(listOf(DetailAct.PLAY, DetailAct.LIKED, DetailAct.DISLIKED, DetailAct.HIDE), s.detail!!.acts)
     }
 
     @Test fun hidingFromThePageTakesTheCardAway() {
@@ -176,11 +204,12 @@ class DetailKeysTest {
         assertTrue(opened.isEmpty())
     }
 
-    @Test fun theOptionsMenuOffersDetailsAfterHide() {
+    @Test fun theOptionsMenuOffersDetailsLast() {
         toTitle(1)
         press(Key.Menu); settle()
-        assertEquals(listOf(MenuAct.HIDE_CARD, MenuAct.DETAILS), s.menu!!.items)
-        press(Key.DirectionDown)
+        assertEquals(listOf(MenuAct.NOT_INTERESTED, MenuAct.LIKED, MenuAct.DISLIKED, MenuAct.DETAILS), s.menu!!.items)
+        // Up from the top goes round to the last, Details.
+        press(Key.DirectionUp)
         press(Key.DirectionCenter); settle()
         assertEquals("Show 1", s.detail?.info?.title)
         assertTrue(opened.isEmpty())

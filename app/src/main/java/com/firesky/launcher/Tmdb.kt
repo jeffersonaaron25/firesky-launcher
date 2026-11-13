@@ -214,10 +214,27 @@ object Tmdb {
     }.getOrNull()
 
     private fun trim(ctx: Context) {
-        artDir(ctx).listFiles()?.sortedByDescending { it.lastModified() }?.drop(40)?.forEach { it.delete() }
+        artDir(ctx).listFiles()?.sortedByDescending { it.lastModified() }?.drop(80)?.forEach { it.delete() }
     }
 
     class CardArt(val thumb: ImageBitmap, val accent: Int)
+
+    /**
+     * Whether a title's lettering will read on a dark page: what's drawn, not the clear around it, has
+     * to be bright in some colour. Red lettering is fine; black or navy lettering isn't.
+     */
+    fun light(b: android.graphics.Bitmap): Boolean {
+        val small = android.graphics.Bitmap.createScaledBitmap(b, 64, (64 * b.height / b.width.coerceAtLeast(1)).coerceIn(4, 64), true)
+        val px = IntArray(small.width * small.height).also { small.getPixels(it, 0, small.width, 0, 0, small.width, small.height) }
+        if (small !== b) small.recycle()
+        var lum = 0.0; var n = 0.0
+        for (p in px) {
+            val a = (p ushr 24) / 255.0
+            if (a < .5) continue
+            lum += a * maxOf(p shr 16 and 255, p shr 8 and 255, p and 255) / 255; n += a
+        }
+        return n > 0 && lum / n > .45
+    }
 
     /** The colour a picture is known for: its most vivid tones, averaged. */
     fun accent(px: IntArray): Int {

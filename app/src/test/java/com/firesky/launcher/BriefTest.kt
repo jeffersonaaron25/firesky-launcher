@@ -11,6 +11,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.pressKey
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -68,12 +69,15 @@ class BriefTest {
         assertEquals("New season of Harbour Lights", Brief.text(at(7, 45), wx(), sun, notes, Card("t-new-5", Kind.TITLE, null, "New season", "Harbour Lights", "S3 E1 · out now", Color.Red)).extra)
     }
 
-    @Test fun itsOnlyForTheFirstWakeOfTheDayAndCanBeTurnedOff() {
+    @Test fun itsForTheFirstWakeOfTheDayAndTheFirstAfterSunsetAndCanBeTurnedOff() {
         val ctx = RuntimeEnvironment.getApplication()
         Prefs.init(ctx)
         val s = HomeState()
         assertNotNull(Brief.due(ctx, s, at(7, 45)))
         assertNull(Brief.due(ctx, s, at(9)))
+        // The evening's, once, after sunset (17:00 by default without a forecast).
+        assertNotNull(Brief.due(ctx, s, at(19, 30)))
+        assertNull(Brief.due(ctx, s, at(21)))
         val tomorrow = at(7, 45).apply { add(Calendar.DAY_OF_YEAR, 1) }
         Prefs.set(Prefs.BRIEF, "off")
         assertNull(Brief.due(ctx, s, tomorrow))
@@ -82,7 +86,16 @@ class BriefTest {
         Prefs.forget()
     }
 
-    @Test fun itShowsInPlaceOfTheTitleAndAnyPressPutsItAwayAndStillCounts() {
+    /** A day whose first wake is after sunset has only the one brief. */
+    @Test fun oneBriefAtATime() {
+        val day = 2026314
+        assertTrue(Brief.wanted(0, 0, day, 20 * 60, 17 * 60))
+        assertFalse(Brief.wanted(day, day, day, 21 * 60, 17 * 60))
+        assertTrue(Brief.wanted(day, 0, day, 18 * 60, 17 * 60))
+        assertFalse(Brief.wanted(day, 0, day, 12 * 60, 17 * 60))
+    }
+
+    @Test fun itShowsInPlaceOfTheTitleAndOkGoesHome() {
         val opened = mutableListOf<String>()
         val s = HomeState()
         s.load(RuntimeEnvironment.getApplication())
@@ -95,23 +108,24 @@ class BriefTest {
         rule.mainClock.advanceTimeBy(300)
         rule.onAllNodesWithText("Clear, 9° now · high 15°, low 6° · rain at 4 PM").assertCountEquals(1)
         rule.onAllNodesWithText("Clear until 3 AM").assertCountEquals(1)
+        rule.onAllNodesWithText("Go to home").assertCountEquals(1)
         rule.onRoot().performKeyInput { pressKey(Key.DirectionCenter) }
         rule.mainClock.advanceTimeBy(1200)
         assertNull(s.brief)
-        assertEquals(listOf("t-resume"), opened)
+        // The press went home: it opened nothing.
+        assertTrue(opened.isEmpty())
         rule.onAllNodesWithText("Clear until 3 AM").assertCountEquals(0)
     }
 
-    @Test fun leftAloneItGoesByItself() {
+    /** It waits to be read: left alone, it stays. */
+    @Test fun leftAloneItStays() {
         val s = HomeState()
         s.load(RuntimeEnvironment.getApplication())
         rule.mainClock.autoAdvance = false
         rule.setContent { Home(s, object : Actions { override fun open(c: Card) {}; override fun amazonHome() {} }) }
         rule.mainClock.advanceTimeBy(500)
         s.brief = Brief.text(at(7, 45), wx(), sun, notes, null)
-        rule.mainClock.advanceTimeBy(3000)
+        rule.mainClock.advanceTimeBy(30_000)
         assertNotNull(s.brief)
-        rule.mainClock.advanceTimeBy(6000)
-        assertNull(s.brief)
     }
 }

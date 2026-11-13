@@ -25,6 +25,20 @@ class TasteTest {
         assertEquals(Taste.Verdict.TWICE, Taste.verdict(s, t0 + 31 * day))
     }
 
+    @Test fun aTitleSeenElsewhereCountsByYourWord() {
+        val s = film()
+        s.said = 1
+        assertEquals(Taste.Verdict.LIKED, Taste.verdict(s, t0))
+        // Liked, and watched twice here too: twice says more.
+        s.ends = 2
+        assertEquals(Taste.Verdict.TWICE, Taste.verdict(s, t0))
+        // Whatever the TV saw, not liking it is your call.
+        s.said = -1
+        assertEquals(Taste.Verdict.DISLIKED, Taste.verdict(s, t0))
+        val t = show().apply { said = -1 }
+        assertEquals(Taste.Verdict.DISLIKED, Taste.verdict(t, t0))
+    }
+
     @Test fun skippingBackAndToTheEndAgainIsntASecondWatch() {
         val s = film()
         Taste.step(s, .9f, null, null, t0)

@@ -36,6 +36,7 @@ class MainActivity : ComponentActivity(), Actions {
     private var opened = false
     private var away = false
     private var titlesJob: Job? = null
+    private var relearnJob: Job? = null
     private var watchArtJob: Job? = null
     private var appsJob: Job? = null
     private var kodiJob: Job? = null
@@ -56,6 +57,11 @@ class MainActivity : ComponentActivity(), Actions {
     private var fresh = false
     /** The screen has had a frame or two to show what coming back changed. */
     private var settled = false
+    /**
+     * Android has finished showing this window since it was last out of view. Until then the window
+     * may not be on screen at all, however far along it is, and the cover would fade to whatever is.
+     */
+    private var entered = true
     private var returns = 0
     /** Out of view since the backdrop was last drawn, which loses its picture until a new frame arrives. */
     private var stopped = true
@@ -109,7 +115,7 @@ class MainActivity : ComponentActivity(), Actions {
         }, android.content.IntentFilter("com.firesky.launcher.PASSED"), android.Manifest.permission.DUMP, null)
         // The idle screen at once, for looking at it without waiting. adb only, as above.
         registerReceiver(object : android.content.BroadcastReceiver() {
-            override fun onReceive(c: android.content.Context, i: Intent) { s.idle = true }
+            override fun onReceive(c: android.content.Context, i: Intent) { s.goIdle() }
         }, android.content.IntentFilter("com.firesky.launcher.IDLE"), android.Manifest.permission.DUMP, null)
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
@@ -126,9 +132,17 @@ class MainActivity : ComponentActivity(), Actions {
         Taste.init(this)
         Passed.init(this)
         s.load(this)
+        s.saidCards = Taste.said(this)
+        music(Music.now)
+        Music.changed = ::music
+        Brief.wake = { woke() }
+        s.relearn = ::relearnSoon
         // Usually made already, so the dock is there in the very first frame.
         Apps.ready()?.let { s.apps = it }
-        s.drawn = { drawn = true; HomeKey.mark("backdrop drawn"); if (fresh && settled) land() }
+        s.drawn = { drawn = true; HomeKey.mark("backdrop drawn"); if (fresh && settled && entered) land() }
+        // The picture of the home screen for coming back to it is taken as the idle screen comes up: an app
+        // opened from there leaves with the idle screen, or the home screen half back, on show.
+        s.beforeIdle = { snap() }
         s.risen = { HomeKey.risen() }
         s.wx = Weather.cached(this)
         setContent { Home(s, this) }
@@ -191,7 +205,7 @@ class MainActivity : ComponentActivity(), Actions {
     private fun ready() {
         fresh = true
         HomeKey.mark("cards ready")
-        if (drawn && settled) land()
+        if (drawn && settled && entered) land()
     }
 
     /**
@@ -247,7 +261,7 @@ class MainActivity : ComponentActivity(), Actions {
         settled = false
         val frames = Choreographer.getInstance()
         val now = ++returns
-        frames.postFrameCallback { frames.postFrameCallback { if (now == returns) { settled = true; if (drawn && fresh) land() } } }
+        frames.postFrameCallback { frames.postFrameCallback { if (now == returns) { settled = true; if (drawn && fresh && entered) land() } } }
     }
 
     /** The screen counts as arrived once the backdrop has drawn and the cards are current. */
@@ -301,9 +315,19 @@ class MainActivity : ComponentActivity(), Actions {
         }
     }
 
+    /** The window is on screen in full: the last thing the cover waits for. */
+    override fun onEnterAnimationComplete() {
+        super.onEnterAnimationComplete()
+        if (entered) return
+        entered = true
+        HomeKey.mark("window shown")
+        if (drawn && fresh && settled) land()
+    }
+
     override fun onStop() {
         super.onStop()
         stopped = true
+        entered = false
         // Opened from All apps: it stays up until the app covers it, then it's gone for next time.
         if (opened) s.allApps = false
     }
@@ -333,7 +357,7 @@ class MainActivity : ComponentActivity(), Actions {
     private fun snap() {
         val bg = s.live?.frame() ?: return
         Backdrop.keep(this, bg)
-        if (s.idle || s.panel || s.detail != null || s.allApps || s.menu != null) return
+        if (s.nearIdle() || s.brief != null || s.panel || s.detail != null || s.allApps || s.menu != null) return
         val d = window.decorView
         val status = s.rects[STATUS]
         val shape = s.shape(s.focusAt)
@@ -358,6 +382,8 @@ class MainActivity : ComponentActivity(), Actions {
         main.removeCallbacks(snapNow)
         Watching.changed = null
         Resume.changed = null
+        Music.changed = null
+        Brief.wake = null
         Apps.changed = null
     }
 
@@ -438,7 +464,7 @@ class MainActivity : ComponentActivity(), Actions {
     private suspend fun loadWatching() = showWatching(withContext(Dispatchers.IO) { Watching.latest(this@MainActivity) })
 
     private fun showWatching(items: List<Watching.Item>) {
-        s.watching = items
+        s.watching = if (Watching.hidden) emptyList() else items
         // How much is left of each show's season, and what's coming, from TMDB.
         lifecycleScope.launch(Dispatchers.IO) {
             val found = s.watching.mapNotNull { w -> Shows.refresh(this@MainActivity, w.title, w.season)?.let { w.title to it } }.toMap()
@@ -457,7 +483,20 @@ class MainActivity : ComponentActivity(), Actions {
     }
 
     /** Today's titles and their pictures. Everything is kept on the TV, so this usually does nothing. */
-    private fun loadTitles() {
+    /**
+     * After you've said what you think of a title, the picks are learned again, once you've stopped
+     * for a moment, so saying it about several in a row costs one go.
+     */
+    private fun relearnSoon() {
+        relearnJob?.cancel()
+        relearnJob = lifecycleScope.launch {
+            delay(RELEARN_AFTER_MS)
+            while (titlesJob?.isActive == true) delay(2_000)
+            loadTitles(again = true)
+        }
+    }
+
+    private fun loadTitles(again: Boolean = false) {
         if (!Tmdb.on || s.apps.isEmpty() || titlesJob?.isActive == true) return
         titlesJob = lifecycleScope.launch(Dispatchers.IO) {
             val ctx = this@MainActivity
@@ -491,7 +530,7 @@ class MainActivity : ComponentActivity(), Actions {
             var pool = Picks.cached(ctx)
             withContext(Dispatchers.Main) { s.titles = items; if (s.pool == null) s.pool = pool }
             show(pool)
-            if (pool == null || Picks.stale(ctx)) {
+            if (again || pool == null || Picks.stale(ctx)) {
                 val have = s.apps.mapTo(HashSet()) { it.pkg }
                 pool = runCatching { Picks.refresh(ctx, items, have, s.useMinutes, s.hiddenCards) }
                     .onFailure { android.util.Log.w("FireSkyPicks", "couldn't make picks", it) }.getOrNull() ?: pool
@@ -521,6 +560,28 @@ class MainActivity : ComponentActivity(), Actions {
         }
         show { movie, id -> Details.cached(ctx, Details.key(movie, id)) }
         show { movie, id -> Details.get(ctx, movie, id) }
+        // Each title's lettering, fetched ahead so its page opens with it.
+        withContext(Dispatchers.Main) { s.details.values.mapNotNull { it.logo } }.forEach { Tmdb.fetch(ctx, LOGO_URL + it, logoName(it)) }
+    }
+
+    /** Lettering read recently, so going back to a page doesn't read it again. */
+    private val logos = object : LinkedHashMap<String, ImageBitmap?>(16, .75f, true) {
+        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, ImageBitmap?>) = size > 12
+    }
+
+    private fun logoName(path: String) = "logo-" + path.trimStart('/')
+
+    /**
+     * A title's lettering, kept clear so it sits on the picture. Lettering that's mostly dark would
+     * vanish against the dark side of the page, so that keeps the name in type instead.
+     */
+    override suspend fun logo(path: String): ImageBitmap? = withContext(Dispatchers.IO) {
+        synchronized(logos) { if (logos.containsKey(path)) return@withContext logos[path] }
+        val got = Tmdb.fetch(this@MainActivity, LOGO_URL + path, logoName(path))?.let { f ->
+            runCatching { BitmapFactory.decodeFile(f.path) }.getOrNull()
+        }?.takeIf { Tmdb.light(it) }?.asImageBitmap()
+        synchronized(logos) { logos[path] = got }
+        got
     }
 
     /** The picture a title's page shows across the screen: TMDB's, at its full size. */
@@ -532,7 +593,18 @@ class MainActivity : ComponentActivity(), Actions {
         }
     }
 
-    /** Waking: the rise, and on the day's first one, the brief. */
+    /** Music started, changed or stopped: the idle screen's colours, and the row's card with its own picture. */
+    private fun music(t: Music.Track?) {
+        s.music = t; s.live?.music(t)
+        if (t == null) { s.thumbs.remove(HomeState.MUSIC_CARD); return }
+        lifecycleScope.launch {
+            val font = runCatching { resources.getFont(R.font.outfit) }.getOrNull()
+            val art = withContext(Dispatchers.Default) { runCatching { Music.card(t, font) }.getOrNull() }
+            if (s.music === t && art != null) s.thumbs[HomeState.MUSIC_CARD] = art.asImageBitmap()
+        }
+    }
+
+    /** Waking: the rise, and on the day's first wake or the first after sunset, the brief. */
     private fun woke() {
         s.woke()
         s.brief = runCatching { Brief.due(this, s) }.getOrNull()
@@ -643,9 +715,13 @@ class MainActivity : ComponentActivity(), Actions {
 
 
     private companion object {
+        /** Where a title's lettering is read from, at a size that stays sharp on the TV. */
+        const val LOGO_URL = "https://image.tmdb.org/t/p/w500"
         /** Room around the clock for its glow and the weather chip growing when selected. */
         const val PAD = 24
         const val RESUME_GRACE_MS = 2000L
         const val SETTLE_FRAMES = 6
+        /** How long after the last thing you said about a title the picks are learned again. */
+        const val RELEARN_AFTER_MS = 20_000L
     }
 }

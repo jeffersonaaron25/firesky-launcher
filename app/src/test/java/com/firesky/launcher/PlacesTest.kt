@@ -20,7 +20,7 @@ class PlacesTest {
     }
 
     @Test fun everyAppGetsItsOwnVersionOfEachPlace() {
-        for (kind in Places.KINDS - Places.MOUNTAINS) {
+        for (kind in Places.KINDS - Places.MOUNTAINS - Places.SPACE) {
             val lands = apps.map { Places.land(kind, it)!! }
             for (l in lands) {
                 assertEquals(kind, l.kind)
@@ -37,14 +37,16 @@ class PlacesTest {
         }
     }
 
-    @Test fun waterAndIslandsHaveAWaterlineAndCitiesSometimesARiver() {
+    @Test fun waterIslandsAndCitiesHaveAWaterline() {
         for (id in apps) {
             assertNotNull(Places.land(Places.WATER, id)!!.water)
             assertNotNull(Places.land(Places.ISLANDS, id)!!.water)
-            assertNull(Places.land(Places.PLAINS, id)!!.water)
+            // Plains and forest have a lake at the foot of their nearest land; the desert stays dry.
+            for (k in listOf(Places.PLAINS, Places.FOREST)) Places.land(k, id)!!.let { assertEquals(k, it.base[3], it.water) }
+            assertNull(Places.land(Places.DESERT, id)!!.water)
         }
-        val rivers = apps.count { Places.land(Places.CITY, it)!!.water != null }
-        assertTrue("some cities have a river and some don't: $rivers", rivers in 1 until apps.size)
+        // Every city stands on its river, right at the foot of its nearest buildings.
+        for (id in apps) Places.land(Places.CITY, id)!!.let { assertEquals(it.base[2], it.water) }
     }
 
     /** The left side is where the text sits, so buildings there stay lower than the towers on the right. */
@@ -64,11 +66,12 @@ class PlacesTest {
             assertTrue(city.seed[2].any { it > 0f })
             // A building's walls never stand above its own roofline.
             for (j in 0 until Places.DETAIL) assertTrue(city.wall[2][j] <= city.height[2][j] + .01f)
-            for (k in listOf(Places.WATER, Places.PLAINS, Places.ISLANDS)) {
+            for (k in listOf(Places.WATER, Places.PLAINS, Places.ISLANDS, Places.FOREST)) {
                 val l = Places.land(k, id)!!
                 assertTrue(l.windows.all { it == 0f })
                 assertTrue(l.seed.all { s -> s.all { it == 0f } })
             }
+            assertTrue(Places.land(Places.DESERT, id)!!.windows.all { it == 0f })
         }
     }
 
@@ -76,14 +79,61 @@ class PlacesTest {
     @Test fun eachPlaceHasItsOwnHorizon() {
         for (id in apps) {
             for (k in listOf(Places.WATER, Places.ISLANDS)) assertTrue(k, Places.land(k, id)!!.horizon <= -Places.WATERLINE)
-            for (k in Places.KINDS - Places.MOUNTAINS) assertTrue(k, Places.land(k, id)!!.horizon in -Places.WATERLINE - 20f..-60f)
+            // One horizon for the sky whichever the place, and every place's farthest ground on it or in front of it.
+            for (k in Places.KINDS - Places.MOUNTAINS) {
+                val l = Places.land(k, id)!!
+                assertEquals(k, Places.HORIZON, l.horizon)
+                assertTrue(k, l.base.filter { it < 500f }.all { it >= Places.HORIZON - 12f })
+            }
+            // Space has no ground for anything to set behind: the sky keeps the mountains' horizon.
+            assertEquals(Places.HORIZON, Places.land(Places.SPACE, id)!!.horizon)
         }
     }
 
-    @Test fun shuffleGivesEachAppAPlaceOfItsOwnAndSpreadsThemAround() {
-        val picks = apps.map { Places.kind(Places.SHUFFLE, it, 0) }
-        assertEquals(picks, apps.map { Places.kind(Places.SHUFFLE, it, 99) })
-        assertTrue("more than two kinds among ${picks.toSet()}", picks.toSet().size > 2)
+    /** Space is the stars alone: no layer comes on screen, and the apps look out in different directions. */
+    @Test fun spaceHasNoLandAndEachAppLooksItsOwnWay() {
+        val lands = apps.map { Places.land(Places.SPACE, it)!! }
+        for (l in lands) {
+            assertTrue(l.base.all { it > 720f })
+            assertNull(l.water)
+            assertTrue(l.facing in 0.0..315.0)
+        }
+        assertTrue("several directions among ${lands.map { it.facing }}", lands.map { it.facing }.toSet().size >= 3)
+        // Nothing else looks anywhere but south.
+        for (k in Places.KINDS - Places.MOUNTAINS - Places.SPACE) assertEquals(180.0, Places.land(k, "com.hulu.plus")!!.facing, 0.0)
+    }
+
+    /** The land says which way each dune faces, so the sun lights one side: right where it should be, and smoothly. */
+    @Test fun dunesHaveLongSlopesAndSteepFaces() {
+        for (id in apps) {
+            val d = Places.land(Places.DESERT, id)!!
+            for (i in 0..3) {
+                // Facing right where it falls to the right, and turning gradually, never jumping.
+                val agree = (2 until Places.DETAIL - 2).count { (d.seed[i][it] > .5f) == (d.height[i][it + 2] < d.height[i][it - 2]) }
+                assertTrue("$id rank $i agree $agree", agree > Places.DETAIL * .8f)
+                assertTrue((1 until Places.DETAIL).all { kotlin.math.abs(d.seed[i][it] - d.seed[i][it - 1]) < .25f })
+            }
+        }
+    }
+
+    @Test fun nearTreesStandTallerThanFarOnes() {
+        for (id in apps) {
+            val f = Places.land(Places.FOREST, id)!!
+            for (i in 1..3) assertTrue("$id rank $i", f.height[i].max() > f.height[i - 1].max())
+        }
+    }
+
+    /** Each app has its own place, and a new one every morning: never the same two days running, every place in turn. */
+    @Test fun shuffleGivesEachAppItsOwnPlaceANewOneEachDay() {
+        val today = apps.map { Places.kind(Places.SHUFFLE, it, 100) }
+        assertTrue("more than two kinds among ${today.toSet()}", today.toSet().size > 2)
+        // The same all day.
+        assertEquals(today, apps.map { Places.kind(Places.SHUFFLE, it, 100) })
+        for (id in apps + (0 until 50).map { "app.$it" }) {
+            val days = (100 until 108).map { Places.kind(Places.SHUFFLE, id, it.toLong()) }
+            assertEquals(id, Places.KINDS.toSet(), days.toSet())
+            for (d in 1 until days.size) assertNotEquals(id, days[d - 1], days[d])
+        }
     }
 
     @Test fun theDailyPlaceChangesAtSunriseNotMidnight() {
@@ -110,5 +160,15 @@ class PlacesTest {
         assertTrue(Places.lit(17 * 60f, sun) in .05f..dusk)
         // No jump at midnight.
         assertEquals(Places.lit(23 * 60 + 59.9f, sun), Places.lit(0f, sun), .01f)
+    }
+
+    /** Space can be chosen on its own, but shuffling keeps to the landscapes. */
+    @Test fun spaceIsChosenNeverShuffled() {
+        assertTrue(Places.SPACE !in Places.KINDS)
+        assertEquals(Places.SPACE, Places.kind(Places.SPACE, "com.hulu.plus", 0))
+        for (d in 0L until 30L) for (id in apps) {
+            assertNotEquals(Places.SPACE, Places.kind(Places.SHUFFLE, id, d))
+            assertNotEquals(Places.SPACE, Places.kind(Places.DAILY, id, d))
+        }
     }
 }

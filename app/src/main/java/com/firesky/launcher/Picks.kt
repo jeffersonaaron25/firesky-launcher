@@ -89,8 +89,10 @@ object Picks {
     class Watched(val info: Facts.Info, val verdict: Taste.Verdict, val series: Boolean, val at: Long, val hidden: Boolean = false)
 
     private fun tail(v: Watched) = when {
-        v.hidden -> ", which you hid"
+        v.hidden -> ", which you weren't interested in"
         v.verdict == Taste.Verdict.LEFT -> ", which you left early"
+        v.verdict == Taste.Verdict.LIKED -> ", which you liked"
+        v.verdict == Taste.Verdict.DISLIKED -> ", which you didn't like"
         v.verdict == Taste.Verdict.TWICE -> if (v.series) ", which you've watched a lot of" else ", which you watched twice"
         v.series -> ", which you've been watching"
         else -> ", which you finished"

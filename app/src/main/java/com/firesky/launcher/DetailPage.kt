@@ -1,12 +1,14 @@
 package com.firesky.launcher
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -43,6 +45,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
@@ -58,7 +61,7 @@ import java.util.Calendar
 import kotlin.math.roundToInt
 
 /** What a title's page can do, in the order its tiles sit. */
-enum class DetailAct { PLAY, TRAILER, HIDE }
+enum class DetailAct { PLAY, TRAILER, LIKED, DISLIKED, HIDE }
 
 /** A title's page as it stands: what's known about it and which tile is picked. */
 class Detail(val card: Card, val info: Details.Info, val acts: List<DetailAct>, val index: Int = 0) {
@@ -67,13 +70,18 @@ class Detail(val card: Card, val info: Details.Info, val acts: List<DetailAct>, 
     companion object {
         /**
          * Play is always there. A trailer needs TMDB to have one and YouTube to play it; hiding needs
-         * the card to be one that can be hidden.
+         * the card to be one that can be hidden. A title FireSky offered can also be one you've seen.
          */
-        fun acts(card: Card, info: Details.Info, youtube: Boolean) = listOfNotNull(
-            DetailAct.PLAY,
-            DetailAct.TRAILER.takeIf { info.trailer != null && youtube },
-            DetailAct.HIDE.takeIf { card.hideId != null },
-        )
+        fun acts(card: Card, info: Details.Info, youtube: Boolean): List<DetailAct> {
+            val offered = card.hideId?.startsWith("title:") == true
+            return listOfNotNull(
+                DetailAct.PLAY,
+                DetailAct.TRAILER.takeIf { info.trailer != null && youtube },
+                DetailAct.LIKED.takeIf { offered },
+                DetailAct.DISLIKED.takeIf { offered },
+                DetailAct.HIDE.takeIf { card.hideId != null },
+            )
+        }
     }
 }
 
@@ -86,9 +94,11 @@ private fun isOk(e: KeyEvent) = e.key == Key.DirectionCenter || e.key == Key.Ent
  */
 fun playKey(s: HomeState, act: Actions, e: KeyEvent): Boolean {
     if (!isPlay(e)) return false
+    // On the music's card, Play is the music's: it goes on to the app playing it.
+    if (s.current == HomeState.MUSIC_CARD && s.music != null) return false
     if (e.type != KeyEventType.KeyUp || s.allApps) return true
     val page = s.rows.flatten().firstOrNull { it.key == s.current }?.let(s::detailOf)
-    val going = s.rows.getOrNull(1)?.firstOrNull { it.kind == Kind.RESUME || it.kind == Kind.KODI }
+    val going = s.rows.getOrNull(1)?.firstOrNull { (it.kind == Kind.RESUME || it.kind == Kind.KODI) && it.key != HomeState.MUSIC_CARD }
     when {
         page != null -> { s.detail = page; Sfx.select() }
         going != null -> { Sfx.select(); act.open(going) }
@@ -113,11 +123,10 @@ fun detailKey(s: HomeState, act: Actions, d: Detail, e: KeyEvent): Boolean {
                 DetailAct.PLAY -> { s.detail = null; act.open(d.card) }
                 // The page stays, so Back from the trailer comes back to it.
                 DetailAct.TRAILER -> d.info.trailerLink?.let { act.trailer(d.card, it) }
-                DetailAct.HIDE -> {
-                    val row = s.tonight()
-                    val i = row.indexOfFirst { it.key == d.card.key }
-                    s.detail = null
-                    s.hide(d.card, (row.getOrNull(i + 1) ?: row.getOrNull(i - 1) ?: s.dock().firstOrNull())?.key)
+                DetailAct.HIDE -> { val next = s.after(d.card); s.detail = null; s.hide(d.card, next) }
+                DetailAct.LIKED, DetailAct.DISLIKED -> {
+                    val next = s.after(d.card); s.detail = null
+                    s.seenIt(d.card, d.acts[d.index] == DetailAct.LIKED, next)
                 }
             }
         }
@@ -138,13 +147,17 @@ fun DetailLayer(s: HomeState, act: Actions) {
     AnimatedVisibility(d != null, enter = fadeIn(tween(260)), exit = fadeOut(tween(200))) {
         val p = d ?: last ?: return@AnimatedVisibility
         val art by produceState(s.thumbs[p.card.key], p.card.key) { act.art(p.card)?.let { value = it } }
+        val logo by produceState<ImageBitmap?>(null, p.info.logo) { value = p.info.logo?.let { act.logo(it) } }
         val rise = remember(p.card.key) { Animatable(0f) }
         LaunchedEffect(p.card.key) { rise.animateTo(1f, tween(RISE_MS, easing = FastOutSlowInEasing)) }
-        DetailPage(p, art, s.app(p.card.pkg)?.label.orEmpty(), s.linkFor(p.card) != null, s.wx?.sun ?: Sky.DEFAULT_SUN, rise.value, lift = s.live?.lift ?: 0f)
+        DetailPage(p, art, s.app(p.card.pkg)?.label.orEmpty(), s.linkFor(p.card) != null, s.wx?.sun ?: Sky.DEFAULT_SUN, rise.value, lift = s.live?.lift ?: 0f, logo = logo)
     }
 }
 
 private const val RISE_MS = 750
+/** The most room a title's lettering takes: as tall as the name in type, and about half the screen wide. */
+private const val LOGO_W = 600f
+private const val LOGO_H = 116f
 private const val W = 1280f
 private const val H = 720f
 private val WARM = Color(0xFFFFC27A)
@@ -169,13 +182,22 @@ private fun minuteNow() = Calendar.getInstance().let { it.get(Calendar.HOUR_OF_D
  * The same place as the home screen, with the title's picture for a sky. The land is the land its
  * card had, in the same colour, and it stands in front of the picture as it does in front of the
  * real sky; where the hour has water, the picture is mirrored in it. [rise] brings the picture up
- * from behind the ridges, 0 to 1.
+ * from behind the ridges, 0 to 1. [story] is the place the title itself is set, when its keywords
+ * say: it takes the place of the usual one, so a film at sea stands on water.
  */
 @Composable
-private fun TitleSky(art: ImageBitmap?, land: String?, hue: Color, sun: Sun, rise: Float, minute: Float?, lift: Float) {
+private fun TitleSky(art: ImageBitmap?, land: String?, hue: Color, sun: Sun, rise: Float, minute: Float?, lift: Float, story: String? = null) {
+    // The place the settings choose, as the home screen shows it for this app, unless the story has
+    // its own; null for mountains.
+    val place = remember(land, sun, story) { if (story != null) Places.land(story, land) else Places.current(land, sun) }
+    val space = place?.kind == Places.SPACE
     // The hour's own light, washed with the title's colour exactly as the backdrop washes it for the card.
-    val v = remember(hue, sun, minute) {
-        FloatArray(Sky.N).also { Sky.pack(minute ?: minuteNow(), sun, it); Sky.tint(it, floatArrayOf(hue.red * 255, hue.green * 255, hue.blue * 255)) }
+    val v = remember(hue, sun, minute, space) {
+        FloatArray(Sky.N).also {
+            Sky.pack(minute ?: minuteNow(), sun, it)
+            if (space) Sky.space(it)
+            Sky.tint(it, floatArrayOf(hue.red * 255, hue.green * 255, hue.blue * 255))
+        }
     }
     // The backdrop's camera sets the land a little up or down the screen; the page's land sits where the backdrop's does.
     val hz = H * v[Sky.HZ] + lift
@@ -191,8 +213,8 @@ private fun TitleSky(art: ImageBitmap?, land: String?, hue: Color, sun: Sun, ris
         }
     }
     fun col(o: Int, a: Float = 1f) = Color(v[o] / 255f, v[o + 1] / 255f, v[o + 2] / 255f, a)
-    // The place the settings choose, as the home screen shows it for this app; null for mountains.
-    val place = remember(land, sun) { Places.current(land, sun) }
+    // Out in space, stars where the picture gives way to the sky at the top.
+    val stars = remember(space) { if (!space) null else Rng(41).let { r -> List(140) { floatArrayOf((r.next() * W).toFloat(), (r.next() * 230).toFloat(), (.4 + r.next() * 1.1).toFloat(), (.3 + r.next() * .6).toFloat()) } } }
     val layers = remember(place, hz) {
         place?.let { pl ->
             List(4) { i ->
@@ -217,6 +239,7 @@ private fun TitleSky(art: ImageBitmap?, land: String?, hue: Color, sun: Sun, ris
                 // The picture gives way to the hour's own sky at the top, where the readings sit.
                 drawRect(Brush.verticalGradient(0f to col(0, .92f), 1f to col(0, 0f), startY = 0f, endY = 190f), size = Size(W, 190f))
             }
+            stars?.forEach { st -> drawCircle(Color.White.copy(alpha = st[3] * (1f - st[1] / 230f)), st[2], Offset(st[0], st[1])) }
             for (i in 0 until upto) {
                 if (place != null) {
                     layers?.get(i)?.let { drawPath(it, col(9 + i * 3)) }
@@ -294,13 +317,17 @@ private fun windowsOf(p: Places.Land, hz: Float, lit: Float): List<Path?> = List
  * for tests; left out, it's now.
  */
 @Composable
-fun DetailPage(d: Detail, art: ImageBitmap?, service: String, direct: Boolean, sun: Sun = Sky.DEFAULT_SUN, rise: Float = 1f, minute: Float? = null, lift: Float = 0f) {
+fun DetailPage(
+    d: Detail, art: ImageBitmap?, service: String, direct: Boolean, sun: Sun = Sky.DEFAULT_SUN, rise: Float = 1f, minute: Float? = null, lift: Float = 0f,
+    logo: ImageBitmap? = null,
+) {
     val z = LocalDz.current
     val i = d.info
     val c = d.card
     val land = when (c.kind) { Kind.PS5 -> "ps5"; Kind.SETTINGS -> "settings"; Kind.ALL -> "all"; else -> c.pkg }
+    val story = remember(i.keywords) { Places.story(i.keywords) }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        TitleSky(art, land, c.hue, sun, rise, minute, lift)
+        TitleSky(art, land, c.hue, sun, rise, minute, lift, story)
 
         Details.score(i)?.let { score ->
             Row(
@@ -319,7 +346,17 @@ fun DetailPage(d: Detail, art: ImageBitmap?, service: String, direct: Boolean, s
         // Where the home screen has it, to the pixel, so opening the page moves nothing you were reading.
         Column(Modifier.offset(z.d(72), z.d(176))) {
             Box(Modifier.height(z.d(20))) { if (c.label.isNotEmpty()) T(c.label.uppercase(), 14f, 600, .7f, .16f) }
-            Box(Modifier.height(z.d(116)).widthIn(max = z.d(1130)), contentAlignment = Alignment.CenterStart) { T(i.title, 74f, 600, spacing = -.025f) }
+            Box(Modifier.height(z.d(116)).widthIn(max = z.d(1130)), contentAlignment = Alignment.CenterStart) {
+                // The title's own lettering once it's read, faded in over the name set in type.
+                Crossfade(logo, animationSpec = tween(320), label = "logo") { l ->
+                    if (l == null) T(i.title, 74f, 600, spacing = -.025f)
+                    else {
+                        val aspect = l.width.toFloat() / l.height.coerceAtLeast(1)
+                        val w = minOf(LOGO_W, LOGO_H * aspect)
+                        Image(l, i.title, Modifier.size(z.d(w), z.d(w / aspect)), contentScale = ContentScale.Fit, alignment = Alignment.CenterStart)
+                    }
+                }
+            }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(z.d(14))) {
                 if (i.rated.isNotEmpty()) {
                     Box(Modifier.border(z.d(1.3f), Color.White.copy(alpha = .5f), RoundedCornerShape(z.d(5))).padding(horizontal = z.d(8), vertical = z.d(1))) {
@@ -361,7 +398,9 @@ fun DetailPage(d: Detail, art: ImageBitmap?, service: String, direct: Boolean, s
                     when (act) {
                         DetailAct.PLAY -> if (direct) "▶  Play on $service" else "▶  Open $service"
                         DetailAct.TRAILER -> "Trailer"
-                        DetailAct.HIDE -> "Hide this"
+                        DetailAct.LIKED -> MenuAct.LIKED.label
+                        DetailAct.DISLIKED -> MenuAct.DISLIKED.label
+                        DetailAct.HIDE -> if (d.card.hideId?.startsWith("title:") == true) MenuAct.NOT_INTERESTED.label else "Hide this"
                     },
                     n == d.index,
                 )

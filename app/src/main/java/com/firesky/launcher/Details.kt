@@ -37,6 +37,10 @@ object Details {
         val trailer: String?,
         /** How long a film runs, or one episode of a show. 0 when TMDB doesn't say. */
         val minutes: Int = 0,
+        /** TMDB's keywords for it, which say among other things where it's set. */
+        val keywords: List<String> = emptyList(),
+        /** The title's own lettering from TMDB, a transparent picture's path, when it has one. */
+        val logo: String? = null,
     ) {
         val movie get() = key.startsWith("title:m")
         val trailerLink get() = trailer?.let { "https://www.youtube.com/watch?v=$it" }
@@ -96,6 +100,19 @@ object Details {
         return if (j.optString("status") in setOf("Ended", "Canceled") && last.isNotEmpty() && last != first) "$first–$last" else first
     }
 
+    /**
+     * The title's own lettering: in your language, else English, else one with no words at all; the
+     * best liked of those. Only pictures, not drawings, since the TV can't show those.
+     */
+    internal fun logo(logos: JSONArray?, language: String): String? {
+        val lang = language.substringBefore('-').lowercase(Locale.ROOT)
+        fun rank(o: JSONObject) = when (o.optString("iso_639_1").takeIf { it != "null" }.orEmpty()) { lang -> 0; "en" -> 1; "" -> 2; else -> 9 }
+        return (0 until (logos?.length() ?: 0)).map { logos!!.getJSONObject(it) }
+            .filter { it.optString("file_path").endsWith(".png") && rank(it) < 9 }
+            .sortedWith(compareBy<JSONObject> { rank(it) }.thenByDescending { it.optDouble("vote_average", 0.0) })
+            .firstOrNull()?.optString("file_path")
+    }
+
     /** Reads TMDB's answer for one title, asked for with its videos, ratings and credits attached. */
     fun parse(j: JSONObject, movie: Boolean, region: String, language: String): Info {
         val credits = j.optJSONObject("credits")
@@ -113,6 +130,8 @@ object Details {
             when { movie && directors.isNotEmpty() -> "Directed by ${and(directors)}"; !movie && creators.isNotEmpty() -> "Created by ${and(creators)}"; else -> "" },
             trailer(j.optJSONObject("videos")?.optJSONArray("results"), language),
             if (movie) j.optInt("runtime") else j.optJSONArray("episode_run_time")?.optInt(0)?.takeIf { it > 0 } ?: j.optJSONObject("last_episode_to_air")?.optInt("runtime") ?: 0,
+            j.optJSONObject("keywords")?.let { k -> names(k.optJSONArray("keywords") ?: k.optJSONArray("results"), 40) }.orEmpty(),
+            logo(j.optJSONObject("images")?.optJSONArray("logos"), language),
         )
     }
 
@@ -150,6 +169,7 @@ object Details {
         .put("title", i.title).put("overview", i.overview).put("years", i.years).put("rated", i.rated).put("length", i.length)
         .put("genres", JSONArray(i.genres)).put("score", i.score).put("votes", i.votes).put("cast", JSONArray(i.cast))
         .put("by", i.by).put("trailer", i.trailer ?: "").put("minutes", i.minutes)
+        .put("kw", JSONArray(i.keywords)).put("logo", i.logo ?: "")
 
     private fun strings(a: JSONArray?) = List(a?.length() ?: 0) { a!!.getString(it) }
 
@@ -157,6 +177,7 @@ object Details {
         key, o.getString("title"), o.getString("overview"), o.getString("years"), o.getString("rated"), o.getString("length"),
         strings(o.optJSONArray("genres")), o.getDouble("score"), o.getInt("votes"), strings(o.optJSONArray("cast")),
         o.getString("by"), o.getString("trailer").ifBlank { null }, o.optInt("minutes"),
+        strings(o.optJSONArray("kw")), o.optString("logo").ifBlank { null },
     )
 
     /** What's known about a title already. Old answers are still shown; [warm] replaces them when it can. */
@@ -164,8 +185,10 @@ object Details {
         all(ctx).optJSONObject(key)?.let { runCatching { fromJson(key, it) }.getOrNull() }
     }
 
+    /** Kept recently, and since keywords and lettering were asked for too. */
     private fun fresh(ctx: Context, key: String) = synchronized(this) {
-        System.currentTimeMillis() - (all(ctx).optJSONObject(key)?.optLong("at") ?: 0L) < MAX_AGE_MS
+        val o = all(ctx).optJSONObject(key)
+        o != null && o.has("kw") && System.currentTimeMillis() - o.optLong("at") < MAX_AGE_MS
     }
 
     internal fun keep(ctx: Context, i: Info) = synchronized(this) {
@@ -181,9 +204,10 @@ object Details {
         if (!Tmdb.on) return null
         val j = Tmdb.api(
             "${if (movie) "movie" else "tv"}/$id", "language" to Prefs.language,
-            "append_to_response" to "videos,credits,${if (movie) "release_dates" else "content_ratings"}",
-            // Trailers in your language, and failing that in English.
+            "append_to_response" to "videos,credits,keywords,images,${if (movie) "release_dates" else "content_ratings"}",
+            // Trailers in your language, and failing that in English; lettering the same, or none with words.
             "include_video_language" to "${Prefs.language.substringBefore('-')},en",
+            "include_image_language" to "${Prefs.language.substringBefore('-')},en,null",
         )
         parse(j, movie, Prefs.region, Prefs.language).also { keep(ctx, it) }
     }.getOrNull()

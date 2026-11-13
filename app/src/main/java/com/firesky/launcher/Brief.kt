@@ -1,12 +1,15 @@
 package com.firesky.launcher
 
 import android.content.Context
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
@@ -18,8 +21,9 @@ import java.util.Calendar
 import java.util.Locale
 
 /**
- * The first time the TV wakes each day, the home screen holds back for a few seconds and says what
- * the day is: the date, the weather, the light, tonight's sky, and anything new to watch.
+ * The first time the TV wakes each day, and again the first time after sunset, the home screen holds
+ * back and says what the day is: the date, the weather, the light, tonight's sky, and anything new to
+ * watch. It stays until a key is pressed, with "Go to home" picked, so there's time to read it.
  */
 object Brief {
     class Text(
@@ -31,8 +35,8 @@ object Brief {
         val extra: String?,
     )
 
-    /** How long it stays once the screen has risen, unless a key is pressed first. */
-    const val SHOWN_MS = 6000L
+    /** Wakes the home screen as if the TV had just woken, so the brief can be seen at once from adb. */
+    @Volatile var wake: (() -> Unit)? = null
     /** A forecast older than this isn't the day's weather any more. */
     private const val OLD_MS = 3 * 3_600_000L
 
@@ -62,12 +66,25 @@ object Brief {
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("brief", Context.MODE_PRIVATE)
 
-    /** The brief, if this is the day's first wake and it's wanted. Asking counts as showing it. */
+    /** For trying it out over adb: today's briefs not yet shown, so the next wake has one. */
+    fun again(ctx: Context) = prefs(ctx).edit().remove("day").remove("evening").apply()
+
+    /**
+     * Whether a wake now gets a brief: the day's first, or the first after sunset. One brief at a
+     * time: a day whose first wake is after sunset has only the evening's.
+     */
+    internal fun wanted(lastDay: Int, lastEvening: Int, day: Int, minute: Int, sunset: Int): Boolean =
+        lastDay != day || (minute >= sunset && lastEvening != day)
+
+    /** The brief, if this is the day's first wake or the first after sunset, and it's wanted. Asking counts as showing it. */
     fun due(ctx: Context, s: HomeState, now: Calendar = Calendar.getInstance()): Text? {
         if (!Prefs.brief) return null
         val day = now.get(Calendar.YEAR) * 1000 + now.get(Calendar.DAY_OF_YEAR)
-        if (prefs(ctx).getInt("day", 0) == day) return null
-        prefs(ctx).edit().putInt("day", day).apply()
+        val minute = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
+        val sunset = s.wx?.sun?.set ?: Sky.DEFAULT_SUN.set
+        val p = prefs(ctx)
+        if (!wanted(p.getInt("day", 0), p.getInt("evening", 0), day, minute, sunset)) return null
+        p.edit().putInt("day", day).apply { if (minute >= sunset) putInt("evening", day) }.apply()
         val w = s.wx?.takeIf { Weather.age(ctx) < OLD_MS }
         val here = Place.get(ctx)
         val notes = w?.let { runCatching { Almanac.tonight(it, now.timeInMillis, here.lat, here.lon) }.getOrNull() }.orEmpty()
@@ -105,5 +122,11 @@ fun BriefView(b: Brief.Text) {
             Spacer(Modifier.height(z.d(34)))
             T(it, 20f, 500, color = WARM)
         }
+        // Picked, as the remote's OK will press it: any key goes home.
+        Spacer(Modifier.height(z.d(40)))
+        Box(
+            Modifier.background(Color.White, RoundedCornerShape(z.d(14))).height(z.d(56)).padding(horizontal = z.d(28)),
+            contentAlignment = Alignment.Center,
+        ) { T("Go to home", 21f, 600, color = Color(0xFF0B0E15)) }
     }
 }
