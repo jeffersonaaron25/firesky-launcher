@@ -195,7 +195,7 @@ object Facts {
         }
         val date = j.optString(if (movie) "release_date" else "first_air_date")
         return Info(
-            key, j.optString(if (movie) "title" else "name"), date.take(4).toIntOrNull() ?: 0,
+            key, plain(j.optString(if (movie) "title" else "name")), date.take(4).toIntOrNull() ?: 0,
             tags.distinctBy { it.role + it.name }, recs, pkgs,
             j.optJSONObject("belongs_to_collection")?.optInt("id") ?: 0,
             j.optDouble("vote_average", 0.0), j.optInt("vote_count", 0), j.optDouble("popularity", 0.0),
@@ -251,7 +251,7 @@ object Facts {
             .filter { it.optString("release_date").let { d -> d.isNotEmpty() && d <= today } }
             .sortedBy { it.optString("release_date") }
         JSONObject().put("parts", JSONArray().apply {
-            parts.forEach { put(JSONObject().put("k", Details.key(true, it.getInt("id"))).put("t", it.optString("title")).put("d", it.optString("release_date"))) }
+            parts.forEach { put(JSONObject().put("k", Details.key(true, it.getInt("id"))).put("t", plain(it.optString("title"))).put("d", it.optString("release_date"))) }
         })
     }.orEmpty()
 

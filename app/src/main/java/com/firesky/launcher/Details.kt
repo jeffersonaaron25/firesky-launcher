@@ -121,8 +121,8 @@ object Details {
         val creators = names(j.optJSONArray("created_by"), 2)
         return Info(
             key(movie, j.getInt("id")),
-            j.optString(if (movie) "title" else "name"),
-            j.optString("overview").trim(),
+            plain(j.optString(if (movie) "title" else "name")),
+            plain(j.optString("overview").trim()),
             years(j, movie), rated(j, movie, region), length(j, movie),
             names(j.optJSONArray("genres"), 2),
             j.optDouble("vote_average", 0.0), j.optInt("vote_count"),
@@ -174,7 +174,7 @@ object Details {
     private fun strings(a: JSONArray?) = List(a?.length() ?: 0) { a!!.getString(it) }
 
     private fun fromJson(key: String, o: JSONObject) = Info(
-        key, o.getString("title"), o.getString("overview"), o.getString("years"), o.getString("rated"), o.getString("length"),
+        key, plain(o.getString("title")), plain(o.getString("overview")), o.getString("years"), o.getString("rated"), o.getString("length"),
         strings(o.optJSONArray("genres")), o.getDouble("score"), o.getInt("votes"), strings(o.optJSONArray("cast")),
         o.getString("by"), o.getString("trailer").ifBlank { null }, o.optInt("minutes"),
         strings(o.optJSONArray("kw")), o.optString("logo").ifBlank { null },

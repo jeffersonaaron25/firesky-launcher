@@ -9,6 +9,16 @@ put on a TV between releases (1.2.1, 1.2.2), which the next release always repla
 Before tagging a release, rename **Unreleased** to its version and date, like `## 1.2.0 - 2026-11-20`.
 The release workflow publishes that section as the release notes, and stops if it has none.
 
+## 1.6.0 - 2026-11-17
+
+- Smoother home screen: its motion no longer slows the cards
+- Moving along the row no longer stalls as the sky changes
+- After a restart the sky is back at once, not 5 seconds later
+- About 30 MB less memory while you watch something else
+- Coming back with Home is a little quicker
+- Going up and back down returns to the card you were on
+- Titles with & in them no longer read "&amp;"
+
 ## 1.5.0 - 2026-11-13
 
 - Music playing? A Now playing card; OK shows it full screen

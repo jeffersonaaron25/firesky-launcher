@@ -403,6 +403,19 @@ uniform int uOff;
 // Music playing: the sky leans to its cover's two colours, high (rgb) and low ([uMusicB]), by a.
 uniform vec4 uMusic;
 uniform vec3 uMusicB;
+// The home screen's motion is drawn from a picture of the scene made once, as most of it stands still
+// between frames. The picture leaves the stars out and keeps how much of the sky shows in its alpha, so
+// the stars still twinkle over it. This shader comes in four versions (see Live.kt's Painter): as it is,
+// the scene itself, exactly as it always was; with BAKE, that picture; with MOTION, a frame of motion
+// whose water comes from the picture; and with MOTION_ABOVE as well, one whose land and sky do too.
+#ifdef MOTION
+uniform sampler2D uBaked;
+#endif
+#ifdef BAKE
+bool baking() { return true; }
+#else
+bool baking() { return false; }
+#endif
 
 const float W = 1280.0;
 const float H = 720.0;
@@ -676,8 +689,10 @@ vec3 sky(vec2 p, float hz) {
             m *= 0.8;
         }
         c = c * (1.0 - m.a * uStarA) + m.rgb * uStarA;
-        vec4 s = texture(uStars, vec2(uv.x, 1.0 - uv.y));
-        c = c * (1.0 - s.a * uStarA) + s.rgb * uStarA;
+        if (!baking()) {
+            vec4 s = texture(uStars, vec2(uv.x, 1.0 - uv.y));
+            c = c * (1.0 - s.a * uStarA) + s.rgb * uStarA;
+        }
     }
     if (uAuroraA > 0.01) c += texture(uAurora, uv).rgb * uAuroraA;
     if (uSunA > 0.01) c = orb(c, p, uSunP * vec2(W, H), uSunR, uCore, uGlow, uSunA);
@@ -699,6 +714,9 @@ vec3 sky(vec2 p, float hz) {
 }
 
 /** The sky and the land up to (not including) layer [upto]: water reflects only what stands behind it. */
+/** How much of the sky the last [scene] let through at its pixel: where the stars can show. */
+float gVis;
+
 vec3 scene(vec2 p, int upto) {
     float hz = H * uHz + uLift;
     // Below a layer's lowest point nothing behind it can show, so start from that layer.
@@ -708,23 +726,57 @@ vec3 scene(vec2 p, int upto) {
     }
     // Over water the sky meets the waterline, not the mountains' horizon.
     vec3 c = first >= 0 ? layerAt(first, p, baseOf(first, hz)) : sky(p, uPlace > 0 && uWl < 0.0 ? hz + uWl : hz);
+#ifdef BAKE
+    gVis = first >= 0 ? 0.0 : 1.0;
+#endif
     for (int i = max(first, 0); i < upto; i++) {
         float base = baseOf(i, hz);
         // Above a layer's highest point it can't reach this pixel, so skip looking it up.
         if (i != first && p.y > uTop[i]) {
             float y = base - heightAt(p.x, i);
             float k = smoothstep(y - uAa, y + uAa, p.y);
-            if (k > 0.0) c = mix(c, layerAt(i, p, base), k);
+            if (k > 0.0) {
+                c = mix(c, layerAt(i, p, base), k);
+#ifdef BAKE
+                gVis *= 1.0 - k;
+#endif
+            }
         }
         if (i == 1 && uSightK == 5 && uSight.w > 0.003) c = train(c, p, base);
         if (uDesert > 0 && uSand > 0.0 && i >= 1) c = spindrift(c, p, i, base);
         float hh = hazeOf(i);
         if (hh > 0.0) {
             float y0 = base - hh;
-            c = mix(c, uHaze.rgb, uHaze.a * clamp((p.y - y0) / (H - y0), 0.0, 1.0));
+            float a = uHaze.a * clamp((p.y - y0) / (H - y0), 0.0, 1.0);
+            c = mix(c, uHaze.rgb, a);
+#ifdef BAKE
+            gVis *= 1.0 - a;
+#endif
         }
     }
     return c;
+}
+
+/** Where design point p is in a picture drawn by this shader: its rows run bottom to top. */
+vec2 uvOf(vec2 p) { return vec2(p.x / W, 1.0 - p.y / H); }
+
+/** The baked picture's colour [c] with the stars over the part of the sky [v] that shows, as the scene puts them. */
+vec3 withStars(vec3 c, float v, vec2 p) {
+    if (uStarA <= 0.01 || v <= 0.0) return c;
+    vec4 s = texture(uStars, uvOf(p));
+    float k = v * uStarA;
+    return c * (1.0 - s.a * k) + s.rgb * k;
+}
+
+/** What the water reflects at q, above the waterline: the scene, or in motion its baked picture. */
+vec3 reflected(vec2 q, float wl) {
+#ifdef MOTION
+    q.y = min(q.y, wl - 0.5);
+    vec4 b = texture(uBaked, uvOf(q));
+    return withStars(b.rgb, b.a, q);
+#else
+    return scene(q, uFront);
+#endif
 }
 
 /** Layers standing in front of the water, like rocks on the near shore, drawn over it. */
@@ -774,53 +826,86 @@ vec3 weather(vec3 c, vec2 p) {
     return c;
 }
 
+/** A place's water at p, below the waterline [wl], [d] of the way from it to the bottom of the screen. */
+vec3 water(vec2 p, float wl, float d) {
+    vec3 c;
+    // A place's water. Waves sway the reflection sideways and break it into slices that slip up
+    // and down, more the nearer they are, so the far shore, lights and the moon shimmer and
+    // stretch as they do on real water. They keep their own time, which runs only while the picture
+    // moves, so a still redrawn later shows them as they were, and comes round each hour: each
+    // speed fits a whole number of times into it, every 3, 4 and 6 seconds, and 2 minutes.
+    float sway = sin(p.y * 0.31 + uWave * 1.5707963) * (0.5 + 6.0 * d) + sin(p.y * 0.07 + 1.7 + uWave * 1.0471976) * 3.0 * d;
+    float slip = sin(p.x * 0.045 + p.y * 0.9 + uWave * 2.0943951) * sin(p.y * 0.37 - uWave * 1.5707963) * (1.5 + 14.0 * d);
+    vec3 r = reflected(vec2(p.x + sway, 2.0 * wl - p.y + slip), wl);
+    // Darker and deeper nearer the viewer, where you look down into the water rather than across
+    // it: the sky's own colour, so day water stays blue and bright and night water goes black.
+    vec3 deep = mix(uSky[0], uSky[1], 0.5) * 0.42;
+    c = mix(r * (0.94 - 0.22 * d), deep, 0.1 + 0.42 * d);
+    // Glints only where something bright is mirrored, drifting with the waves.
+    vec4 s = texture(uShim, vec2(vUv.x + uWave / 120.0, d));
+    c += s.a * 3.0 * clamp(dot(r, vec3(0.3, 0.59, 0.11)) * 1.4, 0.0, 1.0);
+    // The path of light under the moon or a low sun: a glow broken into glints, wider nearer you.
+    if (uLight.z > 0.01 && uLight.y < wl) {
+        float across = exp(-pow((p.x + sway * 2.0 - uLight.x) / (6.0 + 170.0 * d), 2.0));
+        // Broken dashes on the crests of the waves, short far off and longer near, riding them along.
+        float crest = sin(p.y * (1.6 - 0.9 * d) + sin(p.x * 0.06 + uWave * 2.0943951) * 2.2 - uWave * 1.5707963);
+        float split = sin(p.x * (0.5 - 0.35 * d) + p.y * 0.8 + uWave * 1.0471976);
+        float glint = smoothstep(0.72, 0.97, crest) * smoothstep(-0.1, 0.5, split);
+        // Not every crest catches it, so the dashes don't line up in rows.
+        glint *= step(0.4, fract(sin(dot(floor(vec2(p.x / (4.0 + 8.0 * d), p.y / 3.0)), vec2(12.9898, 78.233))) * 43758.5453));
+        c += uLightC * uLight.z * across * (0.22 * (1.0 - 0.7 * d) + 1.1 * glint);
+    }
+    // The far edge catches the sky's light.
+    c += uSky[2] * 0.2 * exp(-(p.y - wl) / 1.6);
+#ifndef MOTION_ABOVE
+    if (uFront < 4) c = front(c, p);
+#endif
+    return c;
+}
+
+#ifndef MOTION
+/** The mountains' lake at p, still, as it always was. */
+vec3 lake(vec2 p, float wl, float d) {
+    vec3 c;
+    c = scene(vec2(p.x, 2.0 * wl - p.y), uFront);
+    if (uWater <= 0.99) c = mix(scene(p, 4), c, uWater);
+    c = mix(c, vec3(0.016, 0.031, 0.063), 0.4 * uWater);
+    vec4 s = texture(uShim, vec2(vUv.x, d));
+    c = c * (1.0 - s.a * uWater) + s.rgb * uWater;
+    if (uFront < 4) c = front(c, p);
+    return c;
+}
+#endif
+
 void main() {
     vec2 p = vUv * vec2(W, H);
     float hz = H * uHz + uLift;
     float wl = uPlace > 0 && uWl < 0.0 ? hz + uWl : hz;
     bool below = p.y > wl && uWater > 0.01;
     vec3 c;
-    if (below) {
-        float d = (p.y - wl) / max(H - wl, 1.0);
-        if (uRipple > 0.0) {
-            // A place's water. Waves sway the reflection sideways and break it into slices that slip up
-            // and down, more the nearer they are, so the far shore, lights and the moon shimmer and
-            // stretch as they do on real water. They keep their own time, which runs only while the picture
-            // moves, so a still redrawn later shows them as they were, and comes round each hour: each
-            // speed fits a whole number of times into it, every 3, 4 and 6 seconds, and 2 minutes.
-            float sway = sin(p.y * 0.31 + uWave * 1.5707963) * (0.5 + 6.0 * d) + sin(p.y * 0.07 + 1.7 + uWave * 1.0471976) * 3.0 * d;
-            float slip = sin(p.x * 0.045 + p.y * 0.9 + uWave * 2.0943951) * sin(p.y * 0.37 - uWave * 1.5707963) * (1.5 + 14.0 * d);
-            vec3 r = scene(vec2(p.x + sway, 2.0 * wl - p.y + slip), uFront);
-            // Darker and deeper nearer the viewer, where you look down into the water rather than across
-            // it: the sky's own colour, so day water stays blue and bright and night water goes black.
-            vec3 deep = mix(uSky[0], uSky[1], 0.5) * 0.42;
-            c = mix(r * (0.94 - 0.22 * d), deep, 0.1 + 0.42 * d);
-            // Glints only where something bright is mirrored, drifting with the waves.
-            vec4 s = texture(uShim, vec2(vUv.x + uWave / 120.0, d));
-            c += s.a * 3.0 * clamp(dot(r, vec3(0.3, 0.59, 0.11)) * 1.4, 0.0, 1.0);
-            // The path of light under the moon or a low sun: a glow broken into glints, wider nearer you.
-            if (uLight.z > 0.01 && uLight.y < wl) {
-                float across = exp(-pow((p.x + sway * 2.0 - uLight.x) / (6.0 + 170.0 * d), 2.0));
-                // Broken dashes on the crests of the waves, short far off and longer near, riding them along.
-                float crest = sin(p.y * (1.6 - 0.9 * d) + sin(p.x * 0.06 + uWave * 2.0943951) * 2.2 - uWave * 1.5707963);
-                float split = sin(p.x * (0.5 - 0.35 * d) + p.y * 0.8 + uWave * 1.0471976);
-                float glint = smoothstep(0.72, 0.97, crest) * smoothstep(-0.1, 0.5, split);
-                // Not every crest catches it, so the dashes don't line up in rows.
-                glint *= step(0.4, fract(sin(dot(floor(vec2(p.x / (4.0 + 8.0 * d), p.y / 3.0)), vec2(12.9898, 78.233))) * 43758.5453));
-                c += uLightC * uLight.z * across * (0.22 * (1.0 - 0.7 * d) + 1.1 * glint);
-            }
-            // The far edge catches the sky's light.
-            c += uSky[2] * 0.2 * exp(-(p.y - wl) / 1.6);
-        } else {
-            // The mountains' lake, as it always was.
-            c = scene(vec2(p.x, 2.0 * wl - p.y), uFront);
-            if (uWater <= 0.99) c = mix(scene(p, 4), c, uWater);
-            c = mix(c, vec3(0.016, 0.031, 0.063), 0.4 * uWater);
-            vec4 s = texture(uShim, vec2(vUv.x, d));
-            c = c * (1.0 - s.a * uWater) + s.rgb * uWater;
-        }
-        if (uFront < 4) c = front(c, p);
-    } else c = scene(p, 4);
+    float dw = (p.y - wl) / max(H - wl, 1.0);
+#if defined(MOTION_ABOVE)
+    if (!below) {
+        vec4 b = texture(uBaked, uvOf(p));
+        c = withStars(b.rgb, b.a, p);
+    } else if (uRipple <= 0.0) c = texture(uBaked, uvOf(p)).rgb;
+    else c = water(p, wl, dw);
+#elif defined(MOTION)
+    // Still water, the mountains' lake, is in the picture as it is.
+    if (!below) c = scene(p, 4);
+    else if (uRipple <= 0.0) c = texture(uBaked, uvOf(p)).rgb;
+    else c = water(p, wl, dw);
+#elif defined(BAKE)
+    // The picture leaves out water that moves: each frame of motion makes it from the rest. Above the
+    // water it's what the water reflects, which leaves out anything standing in front of it.
+    if (below && uRipple > 0.0) { frag = vec4(0.0); return; }
+    c = below ? lake(p, wl, dw) : scene(p, uFront);
+    frag = vec4(c, below ? 1.0 : gVis);
+    return;
+#else
+    if (below) c = uRipple > 0.0 ? water(p, wl, dw) : lake(p, wl, dw);
+    else c = scene(p, 4);
+#endif
     if (uSightK == 4 && uSight.w > 0.003 && uWl < 0.0) c = boat(c, p, wl);
     if (uSunA > 0.01 && (uOff & 2) == 0) {
         // A low sun draws a faint line of light across the picture through it, as a lens does, fading

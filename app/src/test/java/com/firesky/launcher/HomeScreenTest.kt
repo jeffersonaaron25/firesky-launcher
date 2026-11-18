@@ -362,6 +362,38 @@ class HomeScreenTest {
         assertTrue(s.rects.getValue(row[0].key).left > 0)
     }
 
+    @Test fun upToTheWeatherAndBackDownIsTheCardYouLeft() {
+        s.titles = (1..10).map { Tmdb.Item(it, false, "Show $it", true, "com.netflix.ninja", "/b$it.jpg", 100.0 - it, null) }
+        s.titles.forEach { s.thumbs["t-${it.key}"] = android.graphics.Bitmap.createBitmap(4, 4, android.graphics.Bitmap.Config.ARGB_8888).asImageBitmap() }
+        settle()
+        val row = s.tonight()
+        for (n in listOf(0, 2, 6)) {
+            while (s.current != row[n].key) press(if (row.indexOfFirst { it.key == s.current } < n) Key.DirectionRight else Key.DirectionLeft)
+            press(Key.DirectionUp)
+            assertEquals("wx", s.current)
+            press(Key.DirectionDown); settle()
+            assertEquals(row[n].key, s.focusAt)
+        }
+    }
+
+    @Test fun upFromTheDockAndBackDownIsTheTileYouLeft() {
+        s.titles = (1..10).map { Tmdb.Item(it, false, "Show $it", true, "com.netflix.ninja", "/b$it.jpg", 100.0 - it, null) }
+        s.titles.forEach { s.thumbs["t-${it.key}"] = android.graphics.Bitmap.createBitmap(4, 4, android.graphics.Bitmap.Config.ARGB_8888).asImageBitmap() }
+        settle()
+        val row = s.tonight()
+        repeat(3) { press(Key.DirectionRight) }
+        press(Key.DirectionDown)
+        val dock = s.dock()
+        for (n in listOf(dock.lastIndex, 0, 2)) {
+            while (s.current != dock[n].key) press(if (dock.indexOfFirst { it.key == s.current } < n) Key.DirectionRight else Key.DirectionLeft)
+            press(Key.DirectionUp); settle()
+            // Up is back to the card you came down from, too.
+            assertEquals(row[3].key, s.focusAt)
+            press(Key.DirectionUp); press(Key.DirectionDown); press(Key.DirectionDown); settle()
+            assertEquals(dock[n].key, s.focusAt)
+        }
+    }
+
     @Test fun cardsArrivingDontPullFocusOffTheDock() {
         press(Key.DirectionDown); press(Key.DirectionRight)
         val tile = s.dock()[1].key

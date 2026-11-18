@@ -237,7 +237,7 @@ class HomeState {
     fun nearIdle(now: Long = SystemClock.uptimeMillis()) = idle || now - idleEnded < IDLE_LEAVE_MS
 
     fun wxCard(): Card? = wx?.let { w ->
-        Card("wx", Kind.WEATHER, null, "Now", w.condition, "Feels ${w.feels}° · Wind ${w.wind} ${Prefs.windUnit}", SKY)
+        Card(WX, Kind.WEATHER, null, "Now", w.condition, "Feels ${w.feels}° · Wind ${w.wind} ${Prefs.windUnit}", SKY)
     }
 
     /** The Tonight row, best guess first: a PS5 that is on, what you paused, what you usually open now, then what's new. */
@@ -453,6 +453,32 @@ class HomeState {
     var focusAt: String? = null
     /** The dock and the Tonight row as they're shown, so the key handler needn't work them out on every press. */
     var rows: List<List<Card>> = emptyList()
+    /** Where you last were in the Tonight row and in the dock, for coming back to it. */
+    private var shelfAt: String? = null
+    private var dockAt: String? = null
+    /** Puts focus on a tile at once, if it's there. The home screen sets it. */
+    var focusNow: (String) -> Boolean = { false }
+
+    /**
+     * Where Up or Down goes from the tile you're on: back to where you were in the row it goes to,
+     * as on Fire TV's own home, rather than to whichever tile is nearest. The weather is over the far
+     * end of a row that runs on past the screen, and the dock is shorter than the row, so the nearest
+     * was rarely the one you'd left. Null when there's nowhere to go back to and the nearest will do.
+     */
+    fun backTo(up: Boolean): String? {
+        if (allApps) return null
+        val dock = rows.getOrNull(0).orEmpty()
+        val shelf = rows.getOrNull(1).orEmpty()
+        val k = current ?: return null
+        fun List<Card>.has(x: String?) = x != null && any { it.key == x }
+        fun List<Card>.at(x: String?) = x?.takeIf { has(it) }
+        return when {
+            shelf.has(k) -> { shelfAt = k; if (up) null else dock.at(dockAt) }
+            dock.has(k) -> { dockAt = k; if (up && shelf.isNotEmpty()) shelf.at(shelfAt) else null }
+            k == WX -> if (up) null else if (shelf.isNotEmpty()) shelf.at(shelfAt) else dock.at(dockAt)
+            else -> null
+        }
+    }
 
     fun home() {
         allApps = false
@@ -501,6 +527,7 @@ class HomeState {
     companion object {
         /** The card for the music playing, whose picture is drawn for each song. */
         const val MUSIC_CARD = "t-music"
+        const val WX = "wx"
         const val MAX_CARDS = 8
         /** Cards of the row in view before it moves along. */
         const val IN_VIEW = 5

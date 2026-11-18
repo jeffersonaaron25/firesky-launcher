@@ -105,8 +105,8 @@ object Kodi {
     /** Add-on links carry the title in a name= parameter; plain files use the file name. */
     private fun nameFrom(file: String): String {
         if (file.startsWith("plugin://")) {
-            Regex("""[?&]name=([^&]+)""").find(file)?.let { return Uri.decode(it.groupValues[1].replace("+", " ")) }
+            Regex("""[?&]name=([^&]+)""").find(file)?.let { return plain(Uri.decode(it.groupValues[1].replace("+", " "))) }
         }
-        return Uri.decode(file.substringAfterLast('/')).substringBeforeLast('.').replace('.', ' ').replace('_', ' ')
+        return plain(Uri.decode(file.substringAfterLast('/')).substringBeforeLast('.').replace('.', ' ').replace('_', ' '))
     }
 }

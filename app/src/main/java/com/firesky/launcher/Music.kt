@@ -76,8 +76,8 @@ object Music {
 
     /** What a player says once it's settled. Pausing or stopping ends it, if it was the music. */
     private fun take(pkg: String, st: PlaybackState?, meta: MediaMetadata?) {
-        val title = meta?.getString(MediaMetadata.METADATA_KEY_TITLE)?.ifBlank { null }
-        val artist = (meta?.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: meta?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST))?.ifBlank { null }
+        val title = meta?.getString(MediaMetadata.METADATA_KEY_TITLE)?.ifBlank { null }?.let(::plain)
+        val artist = (meta?.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: meta?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST))?.ifBlank { null }?.let(::plain)
         val album = meta?.getString(MediaMetadata.METADATA_KEY_ALBUM)
         val playing = st?.state == PlaybackState.STATE_PLAYING
         if (!playing || title == null || !isMusic(pkg, album, artist)) {

@@ -280,7 +280,8 @@ private fun handleKey(s: HomeState, act: Actions, e: KeyEvent, fm: FocusManager)
     }
     if (e.type == KeyEventType.KeyDown) {
         Sfx.armed = true
-        val moved = fm.moveFocus(dir)
+        val back = if (dir == FocusDirection.Up || dir == FocusDirection.Down) s.backTo(dir == FocusDirection.Up) else null
+        val moved = back?.let(s.focusNow) == true || fm.moveFocus(dir)
         Sfx.armed = false
         if (moved) s.moved = true else Sfx.edge()
     }
@@ -532,7 +533,7 @@ private fun Screen(s: HomeState, act: Actions) {
             (listOfNotNull(s.wxCard()) + tonight + dock).firstOrNull { it.key == f } ?: tonight.firstOrNull() ?: dock.firstOrNull()
         }
     }
-    val inShelf = remember { derivedStateOf { val f = focused.value; f == "wx" || tonight.any { it.key == f } } }
+    val inShelf = remember { derivedStateOf { val f = focused.value; f == HomeState.WX || tonight.any { it.key == f } } }
     val at = remember { derivedStateOf { val f = focused.value; tonight.indexOfFirst { it.key == f } } }
 
     // Back from the idle screen, the sky's next picture keeps the chip busy for a moment, so the cards wait
@@ -557,6 +558,7 @@ private fun Screen(s: HomeState, act: Actions) {
     val reqs = remember { HashMap<String, FocusRequester>() }
     fun req(k: String) = reqs.getOrPut(k) { FocusRequester() }
     fun focusOn(k: String?) { k?.let { runCatching { reqs[it]?.requestFocus() } } }
+    s.focusNow = { k -> reqs[k]?.let { runCatching { it.requestFocus() }.getOrDefault(false) } ?: false }
 
     // Pressing Home on the home screen, or waking, goes to the best guess: the first card.
     val firstKey = (tonight.firstOrNull() ?: dock.firstOrNull())?.key
@@ -634,7 +636,7 @@ private fun Screen(s: HomeState, act: Actions) {
             Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Color.Black.copy(alpha = .5f), .6f to Color.Transparent)))
         }
 
-        Status(s, wx, now, req("wx"), { select(it.key); s.focusAt = it.key }, Modifier.align(Alignment.TopEnd).padding(top = z.d(42), end = z.d(60)).rising(200f, always = true))
+        Status(s, wx, now, req(HomeState.WX), { select(it.key); s.focusAt = it.key }, Modifier.align(Alignment.TopEnd).padding(top = z.d(42), end = z.d(60)).rising(200f, always = true))
         NowPlaying(s)
 
         Box(Modifier.offset(z.d(72), z.d(176)).graphicsLayer { alpha = ui }.rising(300f)) { Hero(hero) }

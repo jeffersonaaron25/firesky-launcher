@@ -30,9 +30,11 @@ import android.util.Half
 import android.util.Log
 import android.view.Choreographer
 import android.view.TextureView
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Calendar
+import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.exp
@@ -172,7 +174,17 @@ class Painter {
     private var blend = 0
     private val tex = IntArray(16)
     private val fbo = IntArray(9)
-    private val loc = HashMap<String, Int>()
+    /** Where each of the scene shader's settings is, in the version of it in use (see [setUp]). */
+    private var loc = HashMap<String, Int>()
+    private val locs = HashMap<Int, HashMap<String, Int>>()
+    /**
+     * The scene shader's versions for the home screen's motion (see Shader.FRAG): everything but the water's
+     * waves, stars and clouds from the baked picture, or only what the water reflects. Made the first time
+     * they're wanted; -1 if one couldn't be.
+     */
+    private var progAll = 0; private var progWater = 0
+    /** The version that makes the baked picture, made with the others. */
+    private var progBake = 0
     private val quad = ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
         put(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)); position(0)
     }
@@ -182,7 +194,13 @@ class Painter {
     private var landShown: Places.Land? = null
     private var kind = -1
     private var fxKind = -1
+    /**
+     * The size the sky's pictures are drawn at, [w] by [h], and the screen's, [sw] by [sh]. The pictures are the
+     * design's own 1280x720, as the home screen's motion always was, and stretched to the screen as they go
+     * up: on a 1080p TV that's under half the chip's work for each, and every picture the same either way.
+     */
     private var w = 0; private var h = 0
+    private var sw = 0; private var sh = 0
     private var uA = 0; private var uB = 0; private var uMix = 0; private var uFocus = 0; private var uFocusY = 0; private var uTexel = 0
     /** Whether the land is softened behind the cards in the pictures drawn now: 1, or 0 on the idle screen. */
     var focus = 1f
@@ -239,15 +257,78 @@ class Painter {
         return s
     }
 
+    /** Where made shaders are kept between starts, set before [init]. */
+    var shaderDir: File? = null
+
+    /**
+     * A shader program, kept once made: the scene's takes the chip about five seconds to make, and the
+     * sky can't show until it's made, so every fresh start after the first takes it from where it was kept.
+     */
     private fun program(frag: String, vert: String = Shader.VERT): Int {
+        val file = shaderDir?.let { File(it, shaderKey(vert, frag) + ".bin") }
+        if (file != null) kept(file)?.let { return it }
         val p = GLES30.glCreateProgram()
         GLES30.glAttachShader(p, shader(GLES30.GL_VERTEX_SHADER, vert))
         GLES30.glAttachShader(p, shader(GLES30.GL_FRAGMENT_SHADER, frag))
         GLES30.glBindAttribLocation(p, 0, "aPos")
+        GLES30.glProgramParameteri(p, GLES30.GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GLES30.GL_TRUE)
         GLES30.glLinkProgram(p)
         val ok = IntArray(1); GLES30.glGetProgramiv(p, GLES30.GL_LINK_STATUS, ok, 0)
         check(ok[0] != 0) { GLES30.glGetProgramInfoLog(p) }
+        if (file != null) runCatching { keep(p, file) }.onFailure { Log.w("FireSkyLive", "couldn't keep a shader", it) }
         return p
+    }
+
+    /** Which shader, for which chip and driver: a new FireSky or a TV update makes a new one. */
+    private fun shaderKey(vert: String, frag: String): String {
+        val d = java.security.MessageDigest.getInstance("SHA-1")
+        for (s in listOf(vert, frag, GLES30.glGetString(GLES30.GL_RENDERER).orEmpty(), GLES30.glGetString(GLES30.GL_VERSION).orEmpty())) {
+            d.update(s.toByteArray()); d.update(0)
+        }
+        return d.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /** The program kept in [file], if the driver still takes it. */
+    private fun kept(file: File): Int? {
+        if (!file.exists()) return null
+        val p = runCatching {
+            val bytes = file.readBytes()
+            if (bytes.size < 8) return@runCatching 0
+            val format = ByteBuffer.wrap(bytes, 0, 4).int
+            val buf = ByteBuffer.allocateDirect(bytes.size - 4).order(ByteOrder.nativeOrder())
+            buf.put(bytes, 4, bytes.size - 4); buf.position(0)
+            val p = GLES30.glCreateProgram()
+            GLES30.glProgramBinary(p, format, buf, bytes.size - 4)
+            val ok = IntArray(1); GLES30.glGetProgramiv(p, GLES30.GL_LINK_STATUS, ok, 0)
+            if (ok[0] != 0) p else { GLES30.glDeleteProgram(p); 0 }
+        }.getOrDefault(0)
+        if (p > 0) { file.setLastModified(System.currentTimeMillis()); return p }
+        // Not taken, perhaps after a TV update: it's made again and kept anew.
+        file.delete()
+        return null
+    }
+
+    /** Keeps program [p] in [file], written off the drawing thread; only the newest few are kept. */
+    private fun keep(p: Int, file: File) {
+        val len = IntArray(1); GLES30.glGetProgramiv(p, GLES30.GL_PROGRAM_BINARY_LENGTH, len, 0)
+        if (len[0] <= 0) return
+        val buf = ByteBuffer.allocateDirect(len[0]).order(ByteOrder.nativeOrder())
+        val got = IntArray(1); val format = IntArray(1)
+        GLES30.glGetProgramBinary(p, len[0], got, 0, format, 0, buf)
+        if (got[0] <= 0) return
+        val bytes = ByteArray(4 + got[0])
+        ByteBuffer.wrap(bytes, 0, 4).putInt(format[0])
+        buf.position(0); buf.get(bytes, 4, got[0])
+        thread(name = "keep-shader", isDaemon = true, priority = Thread.MIN_PRIORITY) {
+            runCatching {
+                val dir = file.parentFile ?: return@runCatching
+                dir.mkdirs()
+                val tmp = File(dir, file.name + ".tmp")
+                tmp.writeBytes(bytes)
+                tmp.renameTo(file)
+                dir.listFiles { f -> f.name.endsWith(".bin") }?.sortedByDescending { it.lastModified() }?.drop(KEPT_SHADERS)?.forEach { it.delete() }
+            }
+        }
     }
 
     private fun texture(unit: Int, b: Bitmap?, repeatX: Boolean, repeatY: Boolean) {
@@ -271,7 +352,8 @@ class Painter {
     }
 
     fun init(width: Int, height: Int, cat: Heavens.Catalog?) {
-        w = width; h = height
+        sw = width; sh = height
+        w = min(width, AMBIENT_W); h = if (w == width) height else height * w / width
         blend = program(Shader.BLEND)
         GLES30.glUseProgram(blend)
         uA = GLES30.glGetUniformLocation(blend, "uA")
@@ -280,7 +362,9 @@ class Painter {
         uFocus = GLES30.glGetUniformLocation(blend, "uFocus")
         uFocusY = GLES30.glGetUniformLocation(blend, "uFocusY")
         uTexel = GLES30.glGetUniformLocation(blend, "uTexel")
+        val t0 = SystemClock.uptimeMillis()
         prog = program(Shader.FRAG)
+        Log.i("FireSkyLive", "shader made in ${SystemClock.uptimeMillis() - t0} ms")
         GLES30.glUseProgram(prog)
         GLES30.glGenTextures(16, tex, 0)
         GLES30.glGenFramebuffers(9, fbo, 0)
@@ -298,6 +382,7 @@ class Painter {
         if (cat != null) {
             // The real sky is drawn into a picture of its own and brings its own aurora, so the painted
             // stars and aurora would be made and never shown.
+            hasSky = true
             target(3, 1, w, h)
             target(4, 11, w / MILKY_DIV, h / MILKY_DIV)
             texture(2, Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888), false, false)
@@ -319,17 +404,13 @@ class Painter {
         // Where a picture is drawn before the land behind the cards is softened into its place.
         target(7, 14, w, h)
         target(8, 15, aw, ah)
-        listOf("uRidge", "uStars", "uAurora", "uShim", "uCloud", "uFx").forEachIndexed { i, n ->
-            GLES30.glUniform1i(GLES30.glGetUniformLocation(prog, n), i)
-        }
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(prog, "uLand"), 9)
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(prog, "uMilkyW"), 11)
-        for (n in listOf(
-            "uTop", "uBot", "uSky", "uLay", "uHaze", "uCore", "uGlow", "uCloudC", "uSunP", "uHz", "uWater", "uStarA",
-            "uAuroraA", "uMoon", "uSunA", "uSunR", "uAa", "uT", "uDim", "uLate", "uKind", "uPan", "uLift", "uDrift", "uWave", "uFlash", "uBolt",
-            "uSlant", "uBalloon", "uPlace", "uBase", "uHazeH", "uWin", "uLit", "uWl", "uFront", "uRipple", "uLight", "uLightC", "uGrass", "uSway",
-            "uSwayL", "uDesert", "uSand", "uSunVis", "uSightK", "uSight", "uSpace", "uMusic", "uMusicB", "uOff",
-        )) loc[n] = GLES30.glGetUniformLocation(prog, n)
+        setUp(prog)
+        loc = locs.getValue(prog)
+        // The baked picture is read on a unit of its own, by the motion's shaders only: the scene's own never
+        // reads it, so drawing into it while it's on that unit is safe.
+        val units = IntArray(1); GLES30.glGetIntegerv(GLES30.GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, units, 0)
+        canBake = units[0] > BAKED_UNIT
+        if (canBake) { GLES30.glActiveTexture(GLES30.GL_TEXTURE0 + BAKED_UNIT); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[14]) }
         if (cat != null) sky(cat)
         GLES30.glEnableVertexAttribArray(0)
         GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 0, quad)
@@ -467,8 +548,22 @@ class Painter {
         b.recycle()
     }
 
-    private fun scene(f: Flow, tw: Int, t: Float, falling: Boolean, late: Boolean) {
-        GLES30.glUseProgram(prog)
+    /** A version of the scene's shader ready to use: its pictures on their units, and where its settings are. */
+    private fun setUp(p: Int) {
+        GLES30.glUseProgram(p)
+        listOf("uRidge", "uStars", "uAurora", "uShim", "uCloud", "uFx").forEachIndexed { i, n ->
+            GLES30.glUniform1i(GLES30.glGetUniformLocation(p, n), i)
+        }
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(p, "uLand"), 9)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(p, "uMilkyW"), 11)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(p, "uBaked"), BAKED_UNIT)
+        locs[p] = HashMap<String, Int>().also { m -> for (n in UNIFORMS) m[n] = GLES30.glGetUniformLocation(p, n) }
+    }
+
+    /** The scene's settings for drawing [f] now, [tw] pixels wide, into version [p] of its shader. */
+    private fun scene(f: Flow, tw: Int, t: Float, falling: Boolean, late: Boolean, p: Int = prog) {
+        GLES30.glUseProgram(p)
+        loc = locs.getValue(p)
         halves.position(0)
         for (i in 0 until 4) { val r = f.ridge[i]; for (j in 0 until POINTS) halves.put(Half.toHalf(r[j])) }
         halves.position(0)
@@ -611,15 +706,151 @@ class Painter {
 
     /** Draws the scene once, into one of the two still pictures. */
     fun still(f: Flow, slot: Int, t: Float, late: Boolean) {
-        scene(f, w, t, false, late)
+        stillBegin(f, t, late)
+        stillBand(0, 1)
+        stillEnd(slot)
+    }
+
+    /**
+     * A still drawn a band at a time, a band a frame, so the chip is never busy for long enough to hold
+     * up the cards. The scene's settings are made once, here, so every band matches.
+     */
+    fun stillBegin(f: Flow, t: Float, late: Boolean) = scene(f, w, t, false, late)
+
+    /** Band [i] of [n], from the bottom of the picture, sent to the chip now rather than saved up. */
+    fun stillBand(i: Int, n: Int) {
+        GLES30.glUseProgram(prog)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[7])
         GLES30.glViewport(0, 0, w, h)
+        val y0 = h * i / n; val y1 = h * (i + 1) / n
+        if (n > 1) { GLES30.glEnable(GLES30.GL_SCISSOR_TEST); GLES30.glScissor(0, y0, w, y1 - y0) }
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        if (n > 1) GLES30.glFlush()
+    }
+
+    /** The bands drawn, the picture softened behind the cards into still [slot]. */
+    fun stillEnd(slot: Int) {
         soften(14, w, h, fbo[slot])
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
     }
 
-    private fun present(a: Int, b: Int, mix: Float) {
+    /**
+     * Most of the scene stands still between frames of the home screen's motion: the land, and the sky but
+     * for its stars. So it's drawn once into a picture of its own, in the still pictures' spare one, and
+     * each frame takes it from there, working out only the water's waves, the clouds and the stars.
+     */
+    private var baked = false
+    private var canBake = false
+
+    /** The picture of the scene is out of date: the light has moved on, or something else was drawn in its place. */
+    fun invalidateBake() { baked = false }
+
+    /**
+     * How a frame of motion is drawn for [land]: 0 all of it as a still is, 1 what the water reflects from
+     * the picture and the rest as a still, 2 everything but the water's waves, the stars and clouds from
+     * it. Land that moves itself, like the plains' grass, can't come from a picture; nor can space, which
+     * doesn't move, and water with rocks in front of it is reflected without them.
+     */
+    private fun bakeMode(land: Places.Land?): Int {
+        if (!canBake || off and 16 != 0) return 0
+        return when (land?.kind) {
+            null -> 2
+            Places.DESERT, Places.SPACE -> 0
+            Places.PLAINS, Places.FOREST -> if (land.water != null) 1 else 0
+            else -> if (land.front < 4) 1 else 2
+        }
+    }
+
+    /** The picture of the scene as it is now. */
+    private fun bake(f: Flow, t: Float, late: Boolean) {
+        scene(f, w, t, false, late, progBake)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[7])
+        GLES30.glViewport(0, 0, w, h)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        baked = true
+    }
+
+    /**
+     * The motion's version of the shader for [mode] (see [bakeMode]), with the one that makes its picture,
+     * made the first time; 0 or less if they can't be.
+     */
+    private fun motionProgram(mode: Int): Int {
+        if (progBake == 0) progBake = variant("#define BAKE\n")
+        if (progBake < 0) return -1
+        var p = if (mode == 2) progAll else progWater
+        if (p == 0) {
+            p = variant("#define MOTION\n" + if (mode == 2) "#define MOTION_ABOVE\n" else "")
+            if (mode == 2) progAll = p else progWater = p
+        }
+        return p
+    }
+
+    /** The scene's shader with [defs] at its top, ready to use; -1 if it couldn't be made. */
+    private fun variant(defs: String): Int {
+        val t0 = SystemClock.uptimeMillis()
+        val p = runCatching { program(Shader.FRAG.replaceFirst("#version 300 es\n", "#version 300 es\n$defs")) }
+            .onFailure { Log.w("FireSkyLive", "a version of the scene's shader couldn't be made", it) }.getOrDefault(-1)
+        if (p > 0) setUp(p)
+        Log.i("FireSkyLive", "shader ${defs.lines().filter { it.isNotBlank() }.joinToString(" ") { it.removePrefix("#define ") }} made in ${SystemClock.uptimeMillis() - t0} ms")
+        return p
+    }
+
+    /**
+     * The motion's shaders made ahead of time, one a call, while nothing is moving: made the moment the
+     * motion first starts, the chip is busy for long enough that the cards could stutter. False once all are.
+     */
+    fun prewarm(): Boolean {
+        if (!canBake || progBake < 0) return false
+        return when {
+            progBake == 0 -> { progBake = variant("#define BAKE\n"); progBake > 0 }
+            progAll == 0 -> { motionProgram(2); true }
+            progWater == 0 -> { motionProgram(1); true }
+            else -> false
+        }
+    }
+
+    /** The pictures given back while another app is in front, which are made again on the way back. */
+    private var trimmed = false
+    private var hasSky = false
+
+    /**
+     * Another app is in front: every picture but the two stills goes, which on a 1080p TV is about 20 MB the
+     * app in front can have. The stills stay, so coming back puts the home screen up at once.
+     */
+    fun trim() {
+        if (trimmed || w == 0) return
+        trimmed = true
+        baked = false
+        val units = if (hasSky) intArrayOf(1, 11, 8, 12, 13, 15, 14) else intArrayOf(8, 12, 13, 15, 14)
+        for (u in units) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0 + u)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[u])
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, 1, 1, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+        }
+    }
+
+    /** Back in front: the pictures [trim] gave back, made again. Before anything is drawn. */
+    fun untrim() {
+        if (!trimmed) return
+        trimmed = false
+        if (hasSky) { target(3, 1, w, h); target(4, 11, w / MILKY_DIV, h / MILKY_DIV) }
+        target(2, 8, DRIFT_W, DRIFT_H)
+        target(5, 12, aw, ah)
+        target(6, 13, aw, ah)
+        target(8, 15, aw, ah)
+        target(7, 14, w, h)
+    }
+
+    /** What's on screen, picture [from] giving way to [to] by [mix], kept as still [slot] without drawing the scene again. */
+    fun keep(from: Int, to: Int, mix: Float, slot: Int) {
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[slot])
+        present(from, to, mix, w, h)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+    }
+
+    private fun present(a: Int, b: Int, mix: Float, vw: Int = sw, vh: Int = sh) {
         GLES30.glUseProgram(blend)
         GLES30.glUniform1i(uA, a)
         GLES30.glUniform1i(uB, b)
@@ -629,7 +860,7 @@ class Painter {
         // A step of the picture shown: the half-size one, stretched, has steps twice as big.
         val tw = when (a) { 8 -> DRIFT_W; 12, 13 -> aw; else -> w }; val th = when (a) { 8 -> DRIFT_H; 12, 13 -> ah; else -> h }
         GLES30.glUniform2f(uTexel, 1f / tw, 1f / th)
-        GLES30.glViewport(0, 0, w, h)
+        GLES30.glViewport(0, 0, vw, vh)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
 
@@ -650,7 +881,7 @@ class Painter {
      */
     fun keepIdle(slot: Int) {
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[slot])
-        present(8, 8, 0f)
+        present(8, 8, 0f, w, h)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
     }
 
@@ -664,11 +895,11 @@ class Painter {
     fun sparks(d: FloatArray, n: Int) {
         if (n <= 0 || dotProg == 0) return
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-        GLES30.glViewport(0, 0, w, h)
+        GLES30.glViewport(0, 0, sw, sh)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFuncSeparate(GLES30.GL_ONE, GLES30.GL_ONE, GLES30.GL_ZERO, GLES30.GL_ONE)
         GLES30.glUseProgram(dotProg)
-        GLES30.glUniform1f(dl.getValue("uScale"), w / 1280f)
+        GLES30.glUniform1f(dl.getValue("uScale"), sw / 1280f)
         sparkBuf.position(0); sparkBuf.put(d, 0, n * 8); sparkBuf.position(0)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vbo[3])
         GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, n * 32, sparkBuf, GLES30.GL_DYNAMIC_DRAW)
@@ -698,7 +929,10 @@ class Painter {
      * the shade darkens the rest, so it keeps what it had. That spares the chip about two fifths.
      */
     fun ambientDraw(f: Flow, t: Float, late: Boolean, slot: Int, whole: Boolean) {
-        scene(f, aw, t, false, late)
+        val mode = bakeMode(f.land)
+        val mp = if (mode > 0) motionProgram(mode) else 0
+        if (mp > 0 && !baked) bake(f, t, late)
+        scene(f, aw, t, false, late, if (mp > 0) mp else prog)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[8])
         GLES30.glViewport(0, 0, aw, ah)
         if (!whole) {
@@ -733,9 +967,9 @@ class Painter {
     /** The old way, for measuring from adb: each frame drawn straight onto the screen at its full size. */
     fun ambient(f: Flow, t: Float, late: Boolean) {
         run {
-            scene(f, w, t, false, late)
+            scene(f, sw, t, false, late)
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-            GLES30.glViewport(0, 0, w, h)
+            GLES30.glViewport(0, 0, sw, sh)
             GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         }
     }
@@ -758,6 +992,17 @@ class Painter {
         const val NAME_ALPHA = .42f
         /** The backdrop's units per pixel of the names' picture: they stand about 9 tall on the 720-high screen. */
         const val NAME_SCALE = .45f
+        /** How many made shaders are kept: the scene's four versions and the sky's few, with room for one update. */
+        const val KEPT_SHADERS = 16
+        /** The unit the baked picture is read on: past the sixteen the rest use. */
+        const val BAKED_UNIT = 16
+        /** The scene shader's settings, looked up in each version of it. */
+        val UNIFORMS = listOf(
+            "uTop", "uBot", "uSky", "uLay", "uHaze", "uCore", "uGlow", "uCloudC", "uSunP", "uHz", "uWater", "uStarA",
+            "uAuroraA", "uMoon", "uSunA", "uSunR", "uAa", "uT", "uDim", "uLate", "uKind", "uPan", "uLift", "uDrift", "uWave", "uFlash", "uBolt",
+            "uSlant", "uBalloon", "uPlace", "uBase", "uHazeH", "uWin", "uLit", "uWl", "uFront", "uRipple", "uLight", "uLightC", "uGrass", "uSway",
+            "uSwayL", "uDesert", "uSand", "uSunVis", "uSightK", "uSight", "uSpace", "uMusic", "uMusicB", "uOff",
+        )
         const val DRIFT_W = 960
         const val DRIFT_H = 540
         /** The part of the screen the motion redraws: everything above the row of cards and a little under its top edge. */
@@ -919,8 +1164,12 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
 
     /** How far the idle screen has turned the view in space, in degrees: the sky wheels slowly past. */
     private var turn = 0.0
+    /** The motion's shaders are still to be made ahead of time (see [Painter.prewarm]). */
+    private var warming = true
     /** The idle screen has drawn a picture of its own since it began. */
     private var idleDrawn = false
+    /** The idle screen's last picture is the still on screen, kept there when another app came in front. */
+    private var idleKept = false
 
     /** The music playing, whose colours the idle screen takes; how far it has taken them, 0 to 1. */
     private var musicOn = false
@@ -1009,8 +1258,9 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
 
     private fun startAmbient() {
         // A fade, the station or fireworks have the screen; the motion starts again when they're done.
-        if (!ready || !active || idle || !calm || ambient || !Prefs.motion || fade >= 0f || animating || sparkling || !moves()) return
+        if (!ready || !active || idle || !calm || ambient || !Prefs.motion || fade >= 0f || band >= 0 || animating || sparkling || !moves()) return
         ambient = true
+        painter.invalidateBake()
         ambientLast = 0L
         ambientFrom = SystemClock.uptimeMillis(); ambientDrawn = 0; ambientWorkNs = 0; ambientWorstNs = 0
         ambFirst = true; ambAt = 0L
@@ -1028,12 +1278,22 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
             if (ambientRunHalf) " (half size)" else ""))
     }
 
-    /** Before a still is shown again, it's made to match the frame of motion on screen, so nothing jumps. */
+    /**
+     * Before a still is shown again, it's made to match the frame of motion on screen, so nothing jumps:
+     * that frame itself, kept as a still, which costs the chip next to nothing.
+     */
     private fun matchStill() {
         if (!shownAmbient) return
-        painter.still(flow, cur, clock(), lateNow())
         shownAmbient = false
+        // Measuring draws straight onto the screen, with no picture of its own to keep.
+        if (shownFrom < 0) { painter.still(flow, cur, clock(), lateNow()); return }
+        // Into the other picture, since the one on screen may be what the motion was fading from.
+        painter.keep(shownFrom, shownTo, shownMix, 1 - cur)
+        cur = 1 - cur
     }
+
+    /** What the motion last put on screen: picture [shownFrom] giving way to [shownTo], by [shownMix]. */
+    private var shownFrom = 6; private var shownTo = 6; private var shownMix = 0f
 
     /** The motion's own pictures: which holds the newest, what's on screen giving way to what, and since when. */
     private var ambSlot = 0
@@ -1050,7 +1310,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
     private val ambientTick = object : Runnable {
         override fun run() {
             if (!ambient) return
-            if (!ready || !active || idle || fade >= 0f || animating || sparkling || !moves()) { stopAmbient(); return }
+            if (!ready || !active || idle || fade >= 0f || band >= 0 || animating || sparkling || !moves()) { stopAmbient(); return }
             val t0 = System.nanoTime()
             val now = SystemClock.uptimeMillis()
             if (!ambientRunHalf) {
@@ -1059,13 +1319,14 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 ambientLast = now
                 sky(dt, true)
                 painter.ambient(flow, clock(), lateNow())
+                shownFrom = -1
             } else {
                 val first = ambFirst
                 if (first || now - ambDrawn >= 1000L / ambientFps) {
                     val dt = if (ambientLast == 0L) 0f else ((now - ambientLast) / 1000f).coerceAtMost(.5f)
                     ambientLast = now
                     // The light keeps up with the hour while the picture moves, so nothing has to stop it to catch up.
-                    if (now - ambientSnap > AMBIENT_SNAP_MS) { flow.snap(minuteNow(), sun); ambientSnap = now }
+                    if (now - ambientSnap > AMBIENT_SNAP_MS) { flow.snap(minuteNow(), sun); ambientSnap = now; painter.invalidateBake() }
                     sky(dt, painter.off and 4 == 0)
                     val slot = if (first) 0 else 1 - ambSlot
                     painter.ambientDraw(flow, clock(), lateNow(), slot, whole = first)
@@ -1082,6 +1343,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 val from = if (fading) 6 + cur else ambFrom
                 val k = if (fading) (now - ambientFrom) / AMBIENT_FADE_MS.toFloat() else ((now - ambAt) * ambientFps / 1000f).coerceIn(0f, 1f)
                 painter.ambientShow(from, ambTo, k)
+                shownFrom = from; shownTo = ambTo; shownMix = k
             }
             if (ambientFinish) GLES30.glFinish()
             swap()
@@ -1105,7 +1367,9 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 wakeLoop()
             }
             if (ready && active && calm && !ambient && SystemClock.uptimeMillis() - lastPoke > ambientAfter) maybeAmbient()
-            if (ready && active && !idle && cat != null && fade < 0f && !animating && !ambient) {
+            // A still screen, a while after the last press: a good moment to make the motion's shaders, if they aren't yet.
+            if (warming && ready && active && !idle && !ambient && fade < 0f && band < 0 && SystemClock.uptimeMillis() - lastPoke > PREWARM_AFTER_MS) warming = painter.prewarm()
+            if (ready && active && !idle && cat != null && fade < 0f && band < 0 && !animating && !ambient) {
                 sky(1f, false)
                 val every = if (skyF.dark > 0f || skyF.dotCount > 0) 30_000L else 300_000L
                 // Something moving in the sky, like the station or a meteor, moves with the home screen's
@@ -1122,9 +1386,8 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         apply()
         flow.snap(minuteNow(), sun)
         sky(0f, true)
-        painter.still(flow, 1 - cur, clock(), lateNow())
-        cur = 1 - cur
-        dirty = true
+        painter.stillBegin(flow, clock(), lateNow())
+        band = 0; bandFade = 0f
         wakeLoop()
     }
 
@@ -1134,6 +1397,7 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 egl(st)
                 cat = runCatching { Heavens.catalog(context) }.onFailure { Log.w(TAG, "no star catalogue", it) }.getOrNull()
                 painter.font = runCatching { context.resources.getFont(R.font.outfit) }.getOrNull()
+                painter.shaderDir = File(context.cacheDir, "shaders")
                 painter.init(width, height, cat)
                 apply()
                 painter.weather(shownKind())
@@ -1218,7 +1482,11 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         choreo.postFrameCallback(tick)
     }
 
-    /** Draws the scene as it should be now, once, and fades to it. */
+    /**
+     * Draws the scene as it should be now and fades to it over [seconds], or with none swaps it in. It's
+     * drawn a band a frame (see [frame]), so the cards keep moving while it is; a newer scene asked for
+     * meanwhile starts it again.
+     */
     private fun scene(seconds: Float) {
         if (!ready) return
         if (fade >= 0f) { queued = seconds; return }
@@ -1229,10 +1497,14 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         flow.target(flow.shape, flow.tint, landFor(focusId))
         flow.snap(minuteNow(), sun)
         sky(0f, true)
-        painter.still(flow, 1 - cur, clock(), lateNow())
-        fade = 0f; fadeS = seconds
+        painter.stillBegin(flow, clock(), lateNow())
+        band = 0; bandFade = seconds
         wakeLoop()
     }
+
+    /** The next band of the still being drawn, or -1 when none is; and the fade to it once it's done. */
+    private var band = -1
+    private var bandFade = 0f
 
     private fun swap() { EGL14.eglSwapBuffers(dpy, surf) }
 
@@ -1273,6 +1545,20 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
                 // The land moves every other frame; fireworks, which need every frame, go over the last one in between.
                 if (odd) { sky(skyAcc, true); skyAcc = 0f; painter.moving(flow, clock(), lateNow()); idleDrawn = true; painter.sparks(sparkDots, sparkN); swap() }
                 else if (sparkN > 0) { painter.again(); painter.sparks(sparkDots, sparkN); swap() }
+                choreo.postFrameCallback(tick)
+            }
+            band >= 0 -> {
+                if (sparkling) stepFireworks(dt)
+                // Back on screen with a still half drawn: the one there was goes up again meanwhile.
+                if (dirty) { painter.show(cur, cur, 0f); swap(); dirty = false }
+                painter.stillBand(band, BANDS)
+                if (++band == BANDS) {
+                    band = -1
+                    painter.stillEnd(1 - cur)
+                    if (bandFade > 0f) { fade = 0f; fadeS = bandFade }
+                    else { cur = 1 - cur; painter.show(cur, cur, 0f); swap(); maybeAmbient() }
+                }
+                if (sparkling) { painter.show(cur, cur, 0f); painter.sparks(sparkDots, sparkN); swap() }
                 choreo.postFrameCallback(tick)
             }
             fade >= 0f -> {
@@ -1342,7 +1628,19 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         focusId = id
         flow.target(id?.let(Sky::shape), hue, landFor(id))
         if (!ready) { firstLight(); return@post }
-        if (!idle) scene(if (same) SLOW_FADE_S else FADE_S)
+        if (idle) return@post
+        // Passing over tiles draws nothing: the sky follows once the selection rests.
+        focusFade = if (same && !focusWaiting) SLOW_FADE_S else FADE_S
+        focusWaiting = true
+        h.removeCallbacks(focusSettled)
+        h.postDelayed(focusSettled, FOCUS_SETTLE_MS)
+    }
+
+    private var focusWaiting = false
+    private var focusFade = FADE_S
+    private val focusSettled = Runnable {
+        focusWaiting = false
+        if (ready && !idle) scene(focusFade)
     }
 
     /** The place chosen in the settings, for [id]: its own when shuffled, today's when it changes daily. */
@@ -1441,7 +1739,10 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         idle = on
         if (on) {
             stopAmbient()
+            // The idle screen draws its own pictures, with its own settings: a still half drawn is dropped.
+            band = -1
             idleDrawn = false
+            idleKept = false
             idleS = 0f
             balloonOut = Balloon.morning(Calendar.getInstance(), minuteNow(), sun, shownKind(), cloud, windTest ?: windKmh)
             sightCan = Sightings.possible(minuteNow(), sun, shownKind(), windTest ?: windKmh, flow.land?.kind)
@@ -1455,11 +1756,12 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
             // Leave from the frame on screen, so nothing jumps, then slowly to the home screen's softened land,
             // as the cards come back: music's colours and its curtain go as they came, not all at once.
             if (idleDrawn) painter.keepIdle(cur)
-            else {
+            else if (!idleKept) {
                 painter.focus = 0f
                 painter.still(flow, cur, clock(), lateNow())
                 painter.focus = 1f
             }
+            idleKept = false
             shownAmbient = false
             lastPoke = SystemClock.uptimeMillis()
             flow.stopDrift()
@@ -1486,11 +1788,24 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
         scene(DAWN_FADE_S)
     }
 
-    fun pause() = h.post { active = false; animating = false; sparkling = false; stopAmbient() }
+    fun pause() = h.post {
+        active = false; animating = false; sparkling = false; stopAmbient()
+        if (!ready) return@post
+        // What's on screen is kept as a still first, since the pictures it came from are about to go.
+        matchStill()
+        if (idle && idleDrawn) { painter.keepIdle(cur); idleDrawn = false; idleKept = true }
+        // A still half drawn needs the scratch picture: it's drawn again on the way back.
+        if (band >= 0) { band = -1; queued = if (bandFade > 0f) bandFade else SLOW_FADE_S }
+        painter.trim()
+    }
 
     fun resume() {
         waiting = true
-        h.post { active = true; dirty = true; animating = false; lastPoke = SystemClock.uptimeMillis(); wakeLoop(); maybeAmbient() }
+        h.post {
+            if (ready) { painter.untrim(); sky(0f, true) }
+            active = true; dirty = true; animating = false; lastPoke = SystemClock.uptimeMillis(); wakeLoop(); maybeAmbient()
+            if (ready && queued >= 0f && fade < 0f) { val q = queued; queued = -1f; scene(q) }
+        }
     }
 
     /** The backdrop as it is now, on its own. */
@@ -1508,6 +1823,12 @@ class LiveView(ctx: Context, private val onFail: () -> Unit, private val onDrawn
 
     private companion object {
         const val FADE_S = .45f
+        /** How many bands a still is drawn in, one a frame: none then keeps the chip for more than a frame or two. */
+        const val BANDS = 10
+        /** How long the selection has to rest on a tile before its sky is drawn: moving on before then draws nothing. */
+        const val FOCUS_SETTLE_MS = 150L
+        /** How long after the last press the motion's shaders may be made ahead of time. */
+        const val PREWARM_AFTER_MS = 1_500L
         /** Leaving the idle screen: slow enough to follow, as the cards fade back in. */
         const val LEAVE_IDLE_S = 1.2f
         /** The very first picture: how long it waits for the selected tile, and how slowly it fades in. */

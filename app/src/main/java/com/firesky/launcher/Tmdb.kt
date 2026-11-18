@@ -121,7 +121,7 @@ object Tmdb {
         for (i in 0 until r.length()) {
             val o = r.getJSONObject(i)
             val art = o.optString("backdrop_path").takeIf { it.startsWith("/") } ?: continue
-            out += Item(o.getInt("id"), movie, o.optString(if (movie) "title" else "name"), since != null, s.pkg, art, o.optDouble("popularity", 0.0), null)
+            out += Item(o.getInt("id"), movie, plain(o.optString(if (movie) "title" else "name")), since != null, s.pkg, art, o.optDouble("popularity", 0.0), null)
             if (out.size == PER_LIST) break
         }
         return out
@@ -163,7 +163,7 @@ object Tmdb {
 
     private fun fromJson(a: JSONArray) = List(a.length()) {
         val o = a.getJSONObject(it)
-        Item(o.getInt("id"), o.getBoolean("movie"), o.getString("title"), o.getBoolean("new"), o.getString("pkg"),
+        Item(o.getInt("id"), o.getBoolean("movie"), plain(o.getString("title")), o.getBoolean("new"), o.getString("pkg"),
             o.getString("art"), o.getDouble("pop"), o.getString("link").ifBlank { null })
     }
 

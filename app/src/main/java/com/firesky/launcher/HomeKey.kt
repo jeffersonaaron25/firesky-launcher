@@ -192,7 +192,8 @@ class HomeKey : AccessibilityService() {
         }
         pressed = now
         note("going home: $why")
-        main.post {
+        // Ahead of anything else waiting: a moment spent here is Amazon's home showing.
+        main.postAtFrontOfQueue {
             glance?.hide()
             cover()
             main.removeCallbacks(giveUp)
@@ -561,7 +562,7 @@ class LogTail(private val name: String, private val command: List<String>, priva
 
     init {
         thread(name = name, isDaemon = true) {
-            var wait = 1000L
+            var wait = FIRST_WAIT_MS
             while (on) {
                 val began = SystemClock.uptimeMillis()
                 runCatching {
@@ -572,13 +573,19 @@ class LogTail(private val name: String, private val command: List<String>, priva
                 }.onFailure { Log.w("FireSkyLog", "$name stopped", it) }
                 running?.destroy()
                 if (!on) break
+                // Started again at once: until it is, a Home press is only noticed once Amazon's home shows.
                 // One that keeps stopping straight away is tried less and less often.
-                wait = if (SystemClock.uptimeMillis() - began > 60_000) 1000L else (wait * 2).coerceAtMost(60_000L)
-                HomeKey.note("$name: the log reader stopped, starting it again in ${wait / 1000} s")
+                wait = if (SystemClock.uptimeMillis() - began > 60_000) FIRST_WAIT_MS else (wait * 2).coerceAtMost(MAX_WAIT_MS)
+                HomeKey.note("$name: the log reader stopped, starting it again in ${wait} ms")
                 runCatching { Thread.sleep(wait) }
             }
         }
     }
 
     fun stop() { on = false; running?.destroy() }
+
+    private companion object {
+        const val FIRST_WAIT_MS = 200L
+        const val MAX_WAIT_MS = 10_000L
+    }
 }

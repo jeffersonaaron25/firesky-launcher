@@ -152,7 +152,7 @@ object Watching {
         private fun meta(body: String): Pair<String, Meta>? {
             val f = fields(body)
             val id = f["opaqueId"] ?: return null
-            val title = f["title"]?.takeIf { it.isNotBlank() && it != "null" } ?: return null
+            val title = f["title"]?.takeIf { it.isNotBlank() && it != "null" }?.let(::plain) ?: return null
             val link = f["deeplinkUri"]?.takeIf { it.startsWith("http") }
             val payload = link?.let { runCatching { URLDecoder.decode(it, "UTF-8") }.getOrNull() }.orEmpty()
             val until = EXPIRES.find(payload)?.groupValues?.get(1)?.toLongOrNull()?.let { it * 1000 - 10 * 60_000 } ?: Long.MAX_VALUE
@@ -262,7 +262,7 @@ object Watching {
         .put("pos", i.progressMs).put("dur", i.durationMs).put("at", i.watchedAt)
 
     private fun fromJson(pkg: String, o: JSONObject) = Item(
-        pkg, o.getString("id"), o.getString("title"),
+        pkg, o.getString("id"), plain(o.getString("title")),
         o.optInt("season", -1).takeIf { it >= 0 }, o.optInt("episode", -1).takeIf { it >= 0 },
         o.optString("art").ifEmpty { null }, o.optString("link").ifEmpty { null }, o.optLong("until"),
         o.optString("page").ifEmpty { null }, o.optLong("pos"), o.optLong("dur"), o.optLong("at"),

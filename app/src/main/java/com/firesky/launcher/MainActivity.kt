@@ -318,9 +318,24 @@ class MainActivity : ComponentActivity(), Actions {
     /** The window is on screen in full: the last thing the cover waits for. */
     override fun onEnterAnimationComplete() {
         super.onEnterAnimationComplete()
+        shown("window shown")
+    }
+
+    /**
+     * The window comes back without animating in (see the theme), and Android may not then say so as above:
+     * having the remote's attention means it's up, and a frame later it's been drawn on screen.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus || entered) return
+        val frames = Choreographer.getInstance()
+        frames.postFrameCallback { frames.postFrameCallback { shown("window focused") } }
+    }
+
+    private fun shown(how: String) {
         if (entered) return
         entered = true
-        HomeKey.mark("window shown")
+        HomeKey.mark(how)
         if (drawn && fresh && settled) land()
     }
 

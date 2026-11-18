@@ -3,5 +3,20 @@
     <style name="FireSky" parent="android:Theme.Material.NoActionBar.Fullscreen">
         <item name="android:windowBackground">@android:color/black</item>
         <item name="android:colorBackground">@android:color/black</item>
+        <item name="android:windowAnimationStyle">@style/FireSky.Coming</item>
+    </style>
+
+    <!--
+        Coming back to the home screen, its window appears at once rather than animating in: on Home it's
+        under the picture of the home screen anyway, which waits for the window to be all there before it
+        lifts, so an animation only kept it waiting. Apps opened from here still animate in as usual, and
+        the home screen still goes as it always has.
+    -->
+    <style name="FireSky.Coming" parent="@android:style/Animation.Activity">
+        <item name="android:activityOpenEnterAnimation">@null</item>
+        <item name="android:activityCloseEnterAnimation">@null</item>
+        <item name="android:taskOpenEnterAnimation">@null</item>
+        <item name="android:taskCloseEnterAnimation">@null</item>
+        <item name="android:taskToFrontEnterAnimation">@null</item>
     </style>
 </resources>

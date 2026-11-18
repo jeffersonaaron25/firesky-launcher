@@ -111,7 +111,7 @@ object Playing {
                 val fresh = was == null || (st.position < RESTART_MS && was.positionAt(st.lastPositionUpdateTime) - st.position > JUMP_MS)
                 Now(
                     pkg,
-                    meta?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)?.ifBlank { null } ?: meta?.getString(MediaMetadata.METADATA_KEY_TITLE)?.ifBlank { null },
+                    (meta?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)?.ifBlank { null } ?: meta?.getString(MediaMetadata.METADATA_KEY_TITLE)?.ifBlank { null })?.let(::plain),
                     st.state == PlaybackState.STATE_PLAYING, st.position, meta?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L,
                     st.lastPositionUpdateTime, st.playbackSpeed,
                     if (fresh) st.position else was!!.startMs, if (fresh) System.currentTimeMillis() else was!!.since,
