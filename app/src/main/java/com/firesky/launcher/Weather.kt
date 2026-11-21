@@ -191,6 +191,9 @@ object Weather {
         return c.inputStream.use { it.bufferedReader().readText() }
     }
 
+    /** For trying the brief out over adb: the saved forecast as if fetched long ago, as it is after a night asleep. */
+    fun age(ctx: Context, old: Boolean) { if (old) prefs(ctx).edit().putLong("at", 0).apply() }
+
     /** How long ago the saved forecast was fetched. */
     fun age(ctx: Context) = System.currentTimeMillis() - prefs(ctx).getLong("at", 0)
 

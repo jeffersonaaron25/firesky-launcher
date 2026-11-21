@@ -9,6 +9,14 @@ put on a TV between releases (1.2.1, 1.2.2), which the next release always repla
 Before tagging a release, rename **Unreleased** to its version and date, like `## 1.2.0 - 2026-11-20`.
 The release workflow publishes that section as the release notes, and stops if it has none.
 
+## 1.7.0 - 2026-11-21
+
+- The home screen no longer freezes after waking or a restart
+- The morning brief has its weather, even just after waking
+- The water moves all the way down, behind the cards too
+- The home screen is sharp again, moving or still
+- Moving along the row is smoother still
+
 ## 1.6.0 - 2026-11-17
 
 - Smoother home screen: its motion no longer slows the cards

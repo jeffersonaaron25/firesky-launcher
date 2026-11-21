@@ -117,6 +117,26 @@ class BriefTest {
         rule.onAllNodesWithText("Clear until 3 AM").assertCountEquals(0)
     }
 
+    /** Just woken, the forecast is hours old: the brief comes up without it, and it comes in once there's a new one. */
+    @Test fun theWeatherComesInOnceThereIsSome() {
+        val s = HomeState()
+        s.load(RuntimeEnvironment.getApplication())
+        rule.mainClock.autoAdvance = false
+        rule.setContent { Home(s, object : Actions { override fun open(c: Card) {}; override fun amazonHome() {} }) }
+        rule.mainClock.advanceTimeBy(500)
+        s.brief = Brief.text(at(7, 45), null, sun, notes, null)
+        rule.mainClock.advanceTimeBy(1500)
+        rule.onAllNodesWithText("Go to home").assertCountEquals(1)
+        rule.onAllNodesWithText("Clear, 9° now · high 15°, low 6° · rain at 4 PM").assertCountEquals(0)
+        rule.onAllNodesWithText("Clear until 3 AM").assertCountEquals(0)
+        val woke = at(7, 45)
+        s.brief = Brief.text(woke, wx(), sun, notes, null)
+        rule.mainClock.advanceTimeBy(1500)
+        rule.onAllNodesWithText("Clear, 9° now · high 15°, low 6° · rain at 4 PM").assertCountEquals(1)
+        rule.onAllNodesWithText("Clear until 3 AM").assertCountEquals(1)
+        assertEquals(woke.timeInMillis, s.brief!!.at)
+    }
+
     /** It waits to be read: left alone, it stays. */
     @Test fun leftAloneItStays() {
         val s = HomeState()

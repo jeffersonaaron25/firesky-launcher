@@ -1,6 +1,11 @@
 package com.firesky.launcher
 
 import android.content.Context
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -33,6 +39,8 @@ object Brief {
         val light: String, val notes: List<Almanac.Note>,
         /** Something new for you today, or null. */
         val extra: String?,
+        /** When it's for, so made again later it still greets the same part of the day. */
+        val at: Long = 0L,
     )
 
     /** Wakes the home screen as if the TV had just woken, so the brief can be seen at once from adb. */
@@ -61,7 +69,7 @@ object Brief {
             else -> "Sunset ${clock(sun.set)}" + (w?.more?.daylight?.let { " · ${it / 60} h ${it % 60} min of daylight" } ?: "")
         }
         val extra = fresh?.let { "${it.label} of ${it.title}" + if ("today" in it.meta) " today" else "" }
-        return Text(label, SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(now.time), weather, light, if (w == null) emptyList() else notes, extra)
+        return Text(label, SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(now.time), weather, light, if (w == null) emptyList() else notes, extra, now.timeInMillis)
     }
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("brief", Context.MODE_PRIVATE)
@@ -85,6 +93,15 @@ object Brief {
         val p = prefs(ctx)
         if (!wanted(p.getInt("day", 0), p.getInt("evening", 0), day, minute, sunset)) return null
         p.edit().putInt("day", day).apply { if (minute >= sunset) putInt("evening", day) }.apply()
+        return now(ctx, s, now)
+    }
+
+    /**
+     * The brief's words as they are now. The TV doesn't look at the weather while it sleeps, so on
+     * waking the forecast is hours old and the brief has only the date; once a new one is in, the
+     * brief showing is made again with it.
+     */
+    fun now(ctx: Context, s: HomeState, now: Calendar = Calendar.getInstance()): Text {
         val w = s.wx?.takeIf { Weather.age(ctx) < OLD_MS }
         val here = Place.get(ctx)
         val notes = w?.let { runCatching { Almanac.tonight(it, now.timeInMillis, here.lat, here.lon) }.getOrNull() }.orEmpty()
@@ -95,6 +112,17 @@ object Brief {
 
 private val WARM = Color(0xFFFFC27A)
 
+/** [v]'s part of the brief: there from the start if [v] is, otherwise fading and opening in once it comes. */
+@Composable
+private fun <V : Any> Arriving(v: V?, content: @Composable (V) -> Unit) {
+    // Kept for the fade out, which shows what was there.
+    val last = remember { arrayOfNulls<Any>(1) }
+    if (v != null) last[0] = v
+    AnimatedVisibility(v != null, enter = fadeIn(tween(900, 200)) + expandVertically(tween(600)), exit = fadeOut()) {
+        @Suppress("UNCHECKED_CAST") (last[0] as V?)?.let { content(it) }
+    }
+}
+
 /** Laid out where the home screen names a title, in the same type, so the home screen can take its place without a jolt. */
 @Composable
 fun BriefView(b: Brief.Text) {
@@ -102,18 +130,21 @@ fun BriefView(b: Brief.Text) {
     Column {
         Box(Modifier.height(z.d(20))) { T(b.label.uppercase(), 14f, 600, .7f, .16f) }
         Box(Modifier.height(z.d(116)).widthIn(max = z.d(1130)), contentAlignment = Alignment.CenterStart) { T(b.date, 74f, 600, spacing = -.025f) }
-        b.weather?.let { T(it, 26f, 400, .85f) }
+        // The weather can come in after the brief is up, just after waking: it fades in when it does.
+        Arriving(b.weather) { T(it, 26f, 400, .85f) }
         Spacer(Modifier.height(z.d(6)))
         T(b.light, 20f, 400, .6f)
-        if (b.notes.isNotEmpty()) {
-            Spacer(Modifier.height(z.d(44)))
-            Row(horizontalArrangement = Arrangement.spacedBy(z.d(24))) {
-                b.notes.forEach { n ->
-                    Column(Modifier.width(z.d(276))) {
-                        T(n.label.uppercase(), 13f, 600, .65f, .14f)
-                        Spacer(Modifier.height(z.d(4)))
-                        T(n.main, 21f, 500)
-                        T(n.sub, 17f, 400, .7f)
+        Arriving(b.notes.ifEmpty { null }) { notes ->
+            Column {
+                Spacer(Modifier.height(z.d(44)))
+                Row(horizontalArrangement = Arrangement.spacedBy(z.d(24))) {
+                    notes.forEach { n ->
+                        Column(Modifier.width(z.d(276))) {
+                            T(n.label.uppercase(), 13f, 600, .65f, .14f)
+                            Spacer(Modifier.height(z.d(4)))
+                            T(n.main, 21f, 500)
+                            T(n.sub, 17f, 400, .7f)
+                        }
                     }
                 }
             }

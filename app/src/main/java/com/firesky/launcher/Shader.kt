@@ -845,8 +845,10 @@ vec3 water(vec2 p, float wl, float d) {
     vec4 s = texture(uShim, vec2(vUv.x + uWave / 120.0, d));
     c += s.a * 3.0 * clamp(dot(r, vec3(0.3, 0.59, 0.11)) * 1.4, 0.0, 1.0);
     // The path of light under the moon or a low sun: a glow broken into glints, wider nearer you.
-    if (uLight.z > 0.01 && uLight.y < wl) {
-        float across = exp(-pow((p.x + sway * 2.0 - uLight.x) / (6.0 + 170.0 * d), 2.0));
+    // Only near its column, outside which it adds nothing that shows.
+    float ax = (p.x + sway * 2.0 - uLight.x) / (6.0 + 170.0 * d);
+    if (uLight.z > 0.01 && uLight.y < wl && abs(ax) < 3.5) {
+        float across = exp(-ax * ax);
         // Broken dashes on the crests of the waves, short far off and longer near, riding them along.
         float crest = sin(p.y * (1.6 - 0.9 * d) + sin(p.x * 0.06 + uWave * 2.0943951) * 2.2 - uWave * 1.5707963);
         float split = sin(p.x * (0.5 - 0.35 * d) + p.y * 0.8 + uWave * 1.0471976);
@@ -863,19 +865,32 @@ vec3 water(vec2 p, float wl, float d) {
     return c;
 }
 
-#ifndef MOTION
-/** The mountains' lake at p, still, as it always was. */
+/**
+ * The mountains' lake at p: a mirror, but for a slow ripple running through it, more the nearer it
+ * is, on the waves' own clock like the sea's, so a still shows it as the motion left it. In motion it
+ * reflects the baked picture, stars and all, while the lake is all there; as it comes or goes with
+ * the hour, it's in the picture as it is.
+ */
 vec3 lake(vec2 p, float wl, float d) {
-    vec3 c;
-    c = scene(vec2(p.x, 2.0 * wl - p.y), uFront);
+    float sway = sin(p.y * 0.31 + uWave * 1.5707963) * (0.3 + 2.4 * d) + sin(p.y * 0.07 + 1.7 + uWave * 1.0471976) * 1.2 * d;
+    vec3 c = reflected(vec2(p.x + sway, 2.0 * wl - p.y), wl);
+#ifndef MOTION
     if (uWater <= 0.99) c = mix(scene(p, 4), c, uWater);
+#endif
     c = mix(c, vec3(0.016, 0.031, 0.063), 0.4 * uWater);
-    vec4 s = texture(uShim, vec2(vUv.x, d));
+    vec4 s = texture(uShim, vec2(vUv.x + uWave / 240.0, d));
     c = c * (1.0 - s.a * uWater) + s.rgb * uWater;
     if (uFront < 4) c = front(c, p);
     return c;
 }
-#endif
+
+/**
+ * The grain's value for this pixel, from -1 to 1, most often near 0: two even random-looking numbers
+ * added, each the noise made for dithering pictures (interleaved gradient noise), which takes the chip
+ * a few steps rather than a sine's many.
+ */
+float ign(vec2 q) { return fract(52.9829189 * fract(dot(q, vec2(0.06711056, 0.00583715)))); }
+float grain() { return ign(gl_FragCoord.xy) + ign(gl_FragCoord.xy + vec2(47.0, 17.0)) - 1.0; }
 
 void main() {
     vec2 p = vUv * vec2(W, H);
@@ -888,13 +903,14 @@ void main() {
     if (!below) {
         vec4 b = texture(uBaked, uvOf(p));
         c = withStars(b.rgb, b.a, p);
-    } else if (uRipple <= 0.0) c = texture(uBaked, uvOf(p)).rgb;
-    else c = water(p, wl, dw);
+    } else if (uRipple > 0.0) c = water(p, wl, dw);
+    else if (uWater > 0.99) c = lake(p, wl, dw);
+    else c = texture(uBaked, uvOf(p)).rgb;
 #elif defined(MOTION)
-    // Still water, the mountains' lake, is in the picture as it is.
     if (!below) c = scene(p, 4);
-    else if (uRipple <= 0.0) c = texture(uBaked, uvOf(p)).rgb;
-    else c = water(p, wl, dw);
+    else if (uRipple > 0.0) c = water(p, wl, dw);
+    else if (uWater > 0.99) c = lake(p, wl, dw);
+    else c = texture(uBaked, uvOf(p)).rgb;
 #elif defined(BAKE)
     // The picture leaves out water that moves: each frame of motion makes it from the rest. Above the
     // water it's what the water reflects, which leaves out anything standing in front of it.
@@ -912,8 +928,13 @@ void main() {
         // as it climbs. Only while it's still above the horizon.
         vec2 sp = uSunP * vec2(W, H);
         float low = smoothstep(0.0, 18.0, hz - sp.y) * (1.0 - smoothstep(60.0, 220.0, hz - sp.y));
-        float streak = exp(-abs(p.y - sp.y) / 1.3) * exp(-abs(p.x - sp.x) / 380.0) + 0.25 * exp(-abs(p.y - sp.y) / 6.0) * exp(-abs(p.x - sp.x) / 160.0);
-        c += uGlow * uSunA * uSunVis * low * streak * 0.32;
+        // Worked out only near its line: further off it adds less than a step of colour, and the
+        // chip has every pixel of every frame of motion to do.
+        float dy = abs(p.y - sp.y);
+        if (low > 0.0 && dy < 48.0) {
+            float streak = exp(-dy / 1.3) * exp(-abs(p.x - sp.x) / 380.0) + 0.25 * exp(-dy / 6.0) * exp(-abs(p.x - sp.x) / 160.0);
+            c += uGlow * uSunA * uSunVis * low * streak * 0.32;
+        }
     }
     c = mix(c, vec3(0.102, 0.141, 0.2), uDim);
     float d = distance(p, vec2(W, H) * 0.5);
@@ -923,7 +944,7 @@ void main() {
     c *= 1.0 - 0.78 * clamp((vUv.y - 0.48) / 0.52, 0.0, 1.0);
     c *= 1.0 - 0.5 * clamp(1.0 - vUv.x / 0.6, 0.0, 1.0);
     // A grain finer than one step of colour, so long gradients like dusk don't break into bands.
-    float n = (uOff & 1) != 0 ? 0.0 : fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) + fract(sin(dot(gl_FragCoord.xy, vec2(39.3468, 11.135))) * 24634.6345) - 1.0;
+    float n = (uOff & 1) != 0 ? 0.0 : grain();
     frag = vec4(c * uLate + n / 255.0, 1.0);
 }
 """

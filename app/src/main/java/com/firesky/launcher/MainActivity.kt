@@ -16,12 +16,15 @@ import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import java.util.Calendar
+import kotlin.math.min
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -145,6 +148,7 @@ class MainActivity : ComponentActivity(), Actions {
         s.beforeIdle = { snap() }
         s.risen = { HomeKey.risen() }
         s.wx = Weather.cached(this)
+        lifecycleScope.launch { snapshotFlow { s.wx }.collect { briefWeather() } }
         setContent { Home(s, this) }
         // Netflix tells Fire TV what you're watching when it likes, often just after you leave it.
         Watching.changed = { runOnUiThread { lifecycleScope.launch { loadWatching() } } }
@@ -165,14 +169,20 @@ class MainActivity : ComponentActivity(), Actions {
         // While the home screen is showing, keep the weather fresh and notice the PS5 turning on.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                var missed = 0
                 while (true) {
                     // Where the TV is decides its weather and its sky; looked up again weekly.
                     if (Place.stale(this@MainActivity)) withContext(Dispatchers.IO) { Place.refresh(this@MainActivity) }
-                    withContext(Dispatchers.IO) { runCatching { Heavens.refresh(this@MainActivity) } }
-                    if (Weather.stale(this@MainActivity)) {
-                        withContext(Dispatchers.IO) { Weather.fetch(this@MainActivity) }?.let { s.wx = it }
+                    // The weather first: just woken, it's hours old, and the brief is waiting for it.
+                    if (!Weather.stale(this@MainActivity)) missed = 0
+                    else {
+                        val wx = withContext(Dispatchers.IO) { Weather.fetch(this@MainActivity) }
+                        if (wx != null) { s.wx = wx; missed = 0 } else missed++
                     }
-                    delay(15 * 60_000L)
+                    withContext(Dispatchers.IO) { runCatching { Heavens.refresh(this@MainActivity) } }
+                    // Just woken, the TV can take a minute to be back on the network: until then it asks
+                    // again every few seconds, then every half minute, rather than in a quarter of an hour.
+                    delay(if (missed > 0) RETRY_S[min(missed, RETRY_S.size) - 1] * 1000L else 15 * 60_000L)
                 }
             }
         }
@@ -623,6 +633,17 @@ class MainActivity : ComponentActivity(), Actions {
     private fun woke() {
         s.woke()
         s.brief = runCatching { Brief.due(this, s) }.getOrNull()
+        if (s.brief?.weather == null && s.brief != null) HomeKey.note("brief up without the weather: the forecast is old")
+    }
+
+    /** A new forecast while the brief is up: it's made again with it, for the same moment. */
+    private fun briefWeather() {
+        val b = s.brief ?: return
+        val at = Calendar.getInstance().apply { if (b.at > 0) timeInMillis = b.at }
+        runCatching { Brief.now(this, s, at) }.getOrNull()?.let {
+            if (b.weather == null && it.weather != null) HomeKey.note("brief: the weather came in")
+            s.brief = it
+        }
     }
 
     override fun trailer(c: Card, link: String) = leave(c) { view(link, YOUTUBE) }
@@ -738,5 +759,7 @@ class MainActivity : ComponentActivity(), Actions {
         const val SETTLE_FRAMES = 6
         /** How long after the last thing you said about a title the picks are learned again. */
         const val RELEARN_AFTER_MS = 20_000L
+        /** Seconds before asking for the weather again, after each try in a row that got nothing. */
+        val RETRY_S = longArrayOf(3, 3, 5, 5, 10, 10, 20, 30)
     }
 }
